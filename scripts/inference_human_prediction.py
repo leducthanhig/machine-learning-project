@@ -16,7 +16,7 @@ from vitra.utils.config_utils import load_config
 from vitra.datasets.human_dataset import pad_state_human, pad_action
 from scipy.spatial.transform import Rotation as R
 from vitra.datasets.dataset_utils import (
-    compute_new_intrinsics_resize, 
+    compute_new_intrinsics_resize,
     calculate_fov,
     ActionFeature,
     StateFeature,
@@ -31,10 +31,10 @@ from visualization.visualize_core import Config as HandConfig
 def main():
     """
     Main execution function for hand action prediction and visualization.
-    
+
     This function uses a multi-process architecture to separate hand reconstruction
     and VLA inference into independent processes, preventing CUDA conflicts.
-    
+
     Workflow:
     1. Parse command-line arguments and load model configurations
     2. Initialize persistent services:
@@ -55,31 +55,31 @@ def main():
 
     """
     parser = argparse.ArgumentParser(description="Hand VLA inference and visualization.")
-    
+
     # Model Configuration
     parser.add_argument('--config_path', type=str, required=True, help='Path to model configuration JSON file')
     parser.add_argument('--model_path', type=str, default=None, help='Path to model checkpoint (overrides config)')
     parser.add_argument('--statistics_path', type=str, default=None, help='Path to normalization statistics JSON (overrides config)')
-    
+
     # Input/Output
     parser.add_argument('--image_path', type=str, required=True, help='Path to input image file')
     parser.add_argument('--hand_path', type=str, default=None, help='Path to hand state .npy file (optional, will run reconstruction if not provided)')
     parser.add_argument('--video_path', type=str, default='./example_human_inf.mp4', help='Path to save output visualization video')
-    
+
     # Hand Reconstruction Models
     parser.add_argument('--hawor_model_path', type=str, default='./weights/hawor/checkpoints/hawor.ckpt', help='Path to HAWOR model weights')
     parser.add_argument('--detector_path', type=str, default='./weights/hawor/external/detector.pt', help='Path to hand detector model')
     parser.add_argument('--moge_model_name', type=str, default='Ruicheng/moge-2-vitl', help='MOGE model name from Hugging Face')
     parser.add_argument('--mano_path', type=str, default='/home/t-qixiuli/repo/VITRA/weights/mano', help='Path to MANO model files')
     # parser.add_argument('--output_path', type=str, default='./recon_results.npy', help='Path to save reconstruction results')
-    
+
     # Prediction Settings
     parser.add_argument('--use_left', action='store_true', help='Enable left hand prediction')
     parser.add_argument('--use_right', action='store_true', help='Enable right hand prediction')
     parser.add_argument('--instruction', type=str, default="Left: Put the trash into the garbage. Right: None.", help='Text instruction for hand motion')
     parser.add_argument('--sample_times', type=int, default=4, help='Number of action samples to generate for diversity')
     parser.add_argument('--fps', type=int, default=8, help='Frames per second for output video')
-    
+
     # Advanced Options
     parser.add_argument('--save_state_local', action='store_true', help='Save hand state locally as .npy file')
 
@@ -88,14 +88,14 @@ def main():
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     args = parser.parse_args()
-    
+
     # Validate that at least one hand is selected
     if not args.use_left and not args.use_right:
         raise ValueError("At least one of --use_left or --use_right must be specified.")
-    
+
     # Load configs
     configs = load_config(args.config_path)
-    
+
     # Override config with command-line arguments if provided
     if args.model_path is not None:
         configs['model_load_path'] = args.model_path
@@ -138,7 +138,7 @@ def main():
         hand_recon_service = None
     else:
         print(f"No precomputed hand state .npy found at {npy_path}. Starting hand reconstruction service.")
-        
+
         # Start hand reconstruction service
         hand_recon_service = HandReconstructionService(args)
         hand_data = None
@@ -146,7 +146,7 @@ def main():
 
     # Start VLA service (normalizer and model are loaded inside the service)
     vla_service = VLAInferenceService(configs)
-    
+
     # Visualization setup
     hand_config = HandConfig(args)
     hand_config.FPS = args.fps
@@ -181,12 +181,12 @@ def main():
         # Initialize state
         current_state_left = None
         current_state_right = None
-        
+
         if use_right:
             current_state_right, beta_right, fov_x, _ = get_state(hand_data, hand_side='right')
         if use_left:
             current_state_left, beta_left, fov_x, _ = get_state(hand_data, hand_side='left')
-        
+
         fov_x = fov_x * np.pi /180
         f_ori = ori_w / np.tan(fov_x / 2) /2
         fov_y = 2 * np.arctan(ori_h / (2 * f_ori))
@@ -201,18 +201,18 @@ def main():
         # Concatenate left and right hand states, filling with zeros if one is None
         if current_state_left is None and current_state_right is None:
             raise ValueError("Both current_state_left and current_state_right are None")
-        
+
         state_left = current_state_left if use_left else np.zeros_like(current_state_right)
         beta_left = beta_left if use_left else np.zeros_like(beta_right)
         state_right = current_state_right if use_right else np.zeros_like(current_state_left)
         beta_right = beta_right if use_right else np.zeros_like(beta_left)
-        
+
         state = np.concatenate([state_left, beta_left, state_right, beta_right], axis=0)
         state_mask = np.array([use_left, use_right], dtype=bool)
-        
+
         # Note: chunk_size needs to be determined from config
         chunk_size = configs.get('fwd_pred_next_n', 16)  # Default to 16 if not in config
-        action_mask = np.tile(np.array([[use_left, use_right]], dtype=bool), (chunk_size, 1)) 
+        action_mask = np.tile(np.array([[use_left, use_right]], dtype=bool), (chunk_size, 1))
 
         fov = np.array([fov_x, fov_y], dtype=np.float32)
         # Convert resized image to numpy for VLA inference
@@ -235,7 +235,8 @@ def main():
             cfg_scale=5.0,
             sample_times=sample_times,
         )
-        
+        vla_service.shutdown()  # Shutdown VLA service after prediction to free GPU memory
+
         fx_exo = intrinsics[0, 0]
         fy_exo = intrinsics[1, 1]
         renderer = Renderer(w, h, (fx_exo, fy_exo), 'cuda')
@@ -244,7 +245,7 @@ def main():
         traj_right_list = np.zeros((sample_times, T, 51), dtype=np.float32)
         traj_left_list = np.zeros((sample_times, T, 51), dtype=np.float32)
 
-        traj_mask = np.tile(np.array([[use_left, use_right]], dtype=bool), (T, 1)) 
+        traj_mask = np.tile(np.array([[use_left, use_right]], dtype=bool), (T, 1))
         left_hand_mask = traj_mask[:, 0]
         right_hand_mask = traj_mask[:, 1]
 
@@ -252,12 +253,12 @@ def main():
         hand_mask = (left_hand_mask, right_hand_mask)
 
         all_rendered_frames = []
-        
+
         # Reconstruct trajectories and visualize for each sample
         for i in range(sample_times):
             traj_right = traj_right_list[i]
             traj_left = traj_left_list[i]
-            
+
             if use_left:
                 traj_left = recon_traj(
                     state=state_left,
@@ -268,7 +269,7 @@ def main():
                     state=state_right,
                     rel_action=unnorm_action[i, :, 51:102],
                 )
-        
+
             left_hand_labels = {
                 'transl_worldspace': traj_left[:, 0:3],
                 'global_orient_worldspace': R.from_euler('xyz', traj_left[:, 3:6]).as_matrix(),
@@ -286,7 +287,7 @@ def main():
             verts_right_worldspace, _ = process_single_hand_labels(right_hand_labels, right_hand_mask, visualizer.mano, is_left=False)
 
             hand_traj_wordspace = (verts_left_worldspace, verts_right_worldspace)
-            
+
             R_w2c = np.broadcast_to(np.eye(3), (T, 3, 3)).copy()
             t_w2c = np.zeros((T, 3, 1), dtype=np.float32)
 
@@ -303,36 +304,36 @@ def main():
                 renderer,
                 mode='first'
             )
-        
+
             all_rendered_frames.append(save_frames)
-        
+
         # Concatenate all samples spatially into a single video
         # all_rendered_frames: list of sample_times frame lists
         # Each frame list has T frames
         num_frames = len(all_rendered_frames[0])
-        
+
         # Determine grid layout (e.g., 2x2 for 4 samples)
         grid_cols = math.ceil(math.sqrt(sample_times))
         grid_rows = math.ceil(sample_times / grid_cols)
-        
+
         # Combine different samples in one video
         combined_frames = []
         for frame_idx in range(num_frames):
             # Collect all sample frames at this time step
             sample_frames = [all_rendered_frames[i][frame_idx] for i in range(sample_times)]
-            
+
             # Pad with black frames if needed to fill the grid
             while len(sample_frames) < grid_rows * grid_cols:
                 black_frame = np.zeros_like(sample_frames[0])
                 sample_frames.append(black_frame)
-            
+
             # Arrange frames in grid
             rows = []
             for row_idx in range(grid_rows):
                 row_frames = sample_frames[row_idx * grid_cols:(row_idx + 1) * grid_cols]
                 row_concat = np.concatenate(row_frames, axis=1)  # Concatenate horizontally
                 rows.append(row_concat)
-            
+
             # Concatenate rows vertically
             combined_frame = np.concatenate(rows, axis=0)
             combined_frames.append(combined_frame)
@@ -340,7 +341,7 @@ def main():
         # Save combined video
         save_to_video(combined_frames, f'{args.video_path}', fps=hand_config.FPS)
         print(f"Combined video with {sample_times} samples saved to {args.video_path}")
-    
+
     finally:
         # Cleanup persistent services
         print("Shutting down services...")
@@ -348,19 +349,19 @@ def main():
             hand_recon_service.shutdown()
         vla_service.shutdown()
         print("All services shut down successfully")
-    
+
 
 def get_state(hand_data, hand_side='right'):
     """
     Load and extract hand state from hand data.
-    
+
     Args:
         hand_data (dict): Dictionary containing hand data
         hand_side (str): Which hand to extract, either 'left' or 'right'. Default is 'right'.
-        
+
     Returns:
         tuple: (state_t0, beta, fov_x, None) where:
-            - state_t0 (np.ndarray): Hand state [51] containing translation (3), 
+            - state_t0 (np.ndarray): Hand state [51] containing translation (3),
                                      global rotation (3 euler angles), and hand pose (45 euler angles)
             - beta (np.ndarray): MANO shape parameters [10]
             - fov_x (float): Horizontal field of view in degrees
@@ -368,7 +369,7 @@ def get_state(hand_data, hand_side='right'):
     """
     if hand_side not in ['left', 'right']:
         raise ValueError(f"hand_side must be 'left' or 'right', got '{hand_side}'")
-    
+
     hand_pose_t0 = hand_data[hand_side][0]['hand_pose']
     hand_pose_t0_euler = R.from_matrix(hand_pose_t0).as_euler('xyz', degrees=False) # [15, 3]
     hand_pose_t0_euler = hand_pose_t0_euler.reshape(-1)  # [45]
@@ -383,16 +384,16 @@ def get_state(hand_data, hand_side='right'):
 def euler_traj_to_rotmat_traj(euler_traj, T):
     """
     Convert Euler angle trajectory to rotation matrix trajectory.
-    
-    Converts a sequence of hand poses represented as Euler angles into 
+
+    Converts a sequence of hand poses represented as Euler angles into
     rotation matrices suitable for MANO model input.
-    
+
     Args:
         euler_traj (np.ndarray): Hand pose trajectory as Euler angles.
                                  Shape: [T, 45] where T is number of timesteps
                                  and 45 = 15 joints * 3 Euler angles per joint
         T (int): Number of timesteps in the trajectory
-        
+
     Returns:
         np.ndarray: Rotation matrix trajectory. Shape: [T, 15, 3, 3]
                     where each [3, 3] block is a rotation matrix for one joint
@@ -410,9 +411,9 @@ def _hand_reconstruction_worker(args_dict, task_queue, result_queue):
     Keeps model loaded and processes multiple requests until shutdown signal.
     """
     from data.tools.hand_recon_core import Config, HandReconstructor
-    
+
     hand_reconstructor = None
-    
+
     try:
         # Reconstruct args object
         class ArgsObj:
@@ -420,40 +421,40 @@ def _hand_reconstruction_worker(args_dict, task_queue, result_queue):
         args_obj = ArgsObj()
         for key, value in args_dict.items():
             setattr(args_obj, key, value)
-        
+
         # Initialize hand reconstructor once
         print("[HandRecon Process] Initializing hand reconstructor...")
         config = Config(args_obj)
         hand_reconstructor = HandReconstructor(config=config, device='cuda')
         print("[HandRecon Process] Hand reconstructor ready")
-        
+
         # Signal ready
         result_queue.put({'type': 'ready'})
-        
+
         # Process tasks in loop
         while True:
             task = task_queue.get()
-            
+
             if task['type'] == 'shutdown':
                 print("[HandRecon Process] Received shutdown signal")
                 break
-            
+
             elif task['type'] == 'reconstruct':
                 try:
                     image_path = task['image_path']
                     image = cv2.imread(image_path)
                     if image is None:
                         raise ValueError(f"Failed to load image from {image_path}")
-                    
+
                     image_list = [image]
                     recon_results = hand_reconstructor.recon(image_list)
-                    
+
                     result_queue.put({
                         'type': 'result',
                         'success': True,
                         'data': recon_results
                     })
-                    
+
                 except Exception as e:
                     import traceback
                     result_queue.put({
@@ -462,7 +463,7 @@ def _hand_reconstruction_worker(args_dict, task_queue, result_queue):
                         'error': str(e),
                         'traceback': traceback.format_exc()
                     })
-        
+
     except Exception as e:
         import traceback
         result_queue.put({
@@ -470,7 +471,7 @@ def _hand_reconstruction_worker(args_dict, task_queue, result_queue):
             'error': str(e),
             'traceback': traceback.format_exc()
         })
-    
+
     finally:
         # Cleanup on shutdown
         if hand_reconstructor is not None:
@@ -489,10 +490,10 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
     from vitra.utils.data_utils import load_normalizer
     from vitra.datasets.human_dataset import pad_state_human, pad_action
     from vitra.datasets.dataset_utils import ActionFeature, StateFeature
-    
+
     model = None
     normalizer = None
-    
+
     try:
         # Load model and normalizer once
         print("[VLA Process] Loading VLA model...")
@@ -500,18 +501,18 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
         model.eval()
         normalizer = load_normalizer(configs_dict)
         print(f"[VLA Process] VLA model ready.")
-        
+
         # Signal ready
         result_queue.put({'type': 'ready'})
-        
+
         # Process tasks in loop
         while True:
             task = task_queue.get()
-            
+
             if task['type'] == 'shutdown':
                 print("[VLA Process] Received shutdown signal")
                 break
-            
+
             elif task['type'] == 'predict':
                 try:
                     image = task['image']
@@ -523,14 +524,14 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
                     num_ddim_steps = task.get('num_ddim_steps', 10)
                     cfg_scale = task.get('cfg_scale', 5.0)
                     sample_times = task.get('sample_times', 1)
-                    
+
                     # Normalize state
                     norm_state = normalizer.normalize_state(state.copy())
-                    
+
                     # Pad state and action
                     unified_action_dim = ActionFeature.ALL_FEATURES[1]  # 192
                     unified_state_dim = StateFeature.ALL_FEATURES[1]    # 212
-                    
+
                     unified_state, unified_state_mask = pad_state_human(
                         state=norm_state,
                         state_mask=state_mask,
@@ -544,13 +545,13 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
                         action_dim=normalizer.action_mean.shape[0],
                         unified_action_dim=unified_action_dim
                     )
-                    
+
                     # Convert to torch and move to GPU
                     fov = torch.from_numpy(fov).unsqueeze(0)
                     unified_state = unified_state.unsqueeze(0)
                     unified_state_mask = unified_state_mask.unsqueeze(0)
                     unified_action_mask = unified_action_mask.unsqueeze(0)
-                    
+
                     # Run inference
                     norm_action = model.predict_action(
                         image=image,
@@ -563,23 +564,23 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
                         fov=fov,
                         sample_times=sample_times,
                     )
-                    
+
                     # Extract and denormalize action
                     norm_action = norm_action[:, :, :102]
                     unnorm_action = normalizer.unnormalize_action(norm_action)
-                    
+
                     # Convert to numpy for inter-process communication
                     if isinstance(unnorm_action, torch.Tensor):
                         unnorm_action_np = unnorm_action.cpu().numpy()
                     else:
                         unnorm_action_np = np.array(unnorm_action)
-                    
+
                     result_queue.put({
                         'type': 'result',
                         'success': True,
                         'data': unnorm_action_np
                     })
-                    
+
                 except Exception as e:
                     import traceback
                     result_queue.put({
@@ -588,7 +589,7 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
                         'error': str(e),
                         'traceback': traceback.format_exc()
                     })
-        
+
     except Exception as e:
         import traceback
         result_queue.put({
@@ -596,7 +597,7 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
             'error': str(e),
             'traceback': traceback.format_exc()
         })
-    
+
     finally:
         # Cleanup on shutdown
         if model is not None:
@@ -610,12 +611,12 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
 
 class HandReconstructionService:
     """Service wrapper for persistent hand reconstruction process"""
-    
+
     def __init__(self, args):
         self.ctx = mp.get_context('spawn')
         self.task_queue = self.ctx.Queue()
         self.result_queue = self.ctx.Queue()
-        
+
         # Convert args to dict for pickling
         args_dict = {
             'hawor_model_path': args.hawor_model_path,
@@ -623,34 +624,34 @@ class HandReconstructionService:
             'moge_model_name': args.moge_model_name,
             'mano_path': args.mano_path,
         }
-        
+
         # Start persistent process
         self.process = self.ctx.Process(
             target=_hand_reconstruction_worker,
             args=(args_dict, self.task_queue, self.result_queue)
         )
         self.process.start()
-        
+
         # Wait for ready signal
         ready_msg = self.result_queue.get()
         if ready_msg['type'] == 'ready':
             print("Hand reconstruction service initialized")
         elif ready_msg['type'] == 'error':
             raise RuntimeError(f"Failed to initialize hand reconstruction: {ready_msg['error']}")
-    
+
     def reconstruct(self, image_path):
         """Request hand reconstruction for an image"""
         self.task_queue.put({
             'type': 'reconstruct',
             'image_path': image_path
         })
-        
+
         result = self.result_queue.get()
         if result['type'] == 'result' and result['success']:
             return result['data']
         else:
             raise RuntimeError(f"Hand reconstruction failed: {result.get('error', 'Unknown error')}")
-    
+
     def shutdown(self):
         """Shutdown the persistent process"""
         self.task_queue.put({'type': 'shutdown'})
@@ -662,27 +663,27 @@ class HandReconstructionService:
 
 class VLAInferenceService:
     """Service wrapper for persistent VLA inference process"""
-    
+
     def __init__(self, configs):
         self.ctx = mp.get_context('spawn')
         self.task_queue = self.ctx.Queue()
         self.result_queue = self.ctx.Queue()
-        
+
         # Start persistent process
         self.process = self.ctx.Process(
             target=_vla_inference_worker,
             args=(configs, self.task_queue, self.result_queue)
         )
         self.process.start()
-        
+
         # Wait for ready signal
         ready_msg = self.result_queue.get()
         if ready_msg['type'] == 'ready':
             print("VLA inference service initialized")
         elif ready_msg['type'] == 'error':
             raise RuntimeError(f"Failed to initialize VLA model: {ready_msg['error']}")
-    
-    def predict(self, image, instruction, state, state_mask, action_mask, 
+
+    def predict(self, image, instruction, state, state_mask, action_mask,
                 fov, num_ddim_steps=10, cfg_scale=5.0, sample_times=1):
         """Request action prediction with state normalization and padding"""
 
@@ -698,14 +699,14 @@ class VLAInferenceService:
             'cfg_scale': cfg_scale,
             'sample_times': sample_times,
         })
-        
+
         result = self.result_queue.get()
         if result['type'] == 'result' and result['success']:
             # Return unnormalized action as numpy array
             return result['data']
         else:
             raise RuntimeError(f"VLA inference failed: {result.get('error', 'Unknown error')}")
-    
+
     def shutdown(self):
         """Shutdown the persistent process"""
         self.task_queue.put({'type': 'shutdown'})
