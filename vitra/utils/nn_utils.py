@@ -15,6 +15,8 @@ class LinearProjector(nn.Module):
         self.projector = nn.Linear(vision_dim, llm_dim, bias=True)
 
     def forward(self, img_patches: torch.Tensor) -> torch.Tensor:
+        if img_patches.dtype != self.projector.weight.dtype or img_patches.device != self.projector.weight.device:
+            img_patches = img_patches.to(device=self.projector.weight.device, dtype=self.projector.weight.dtype)
         return self.projector(img_patches)
 
 
@@ -31,6 +33,9 @@ class MLPProjector(nn.Module):
             raise ValueError(f"Projector with `{mlp_type = }` is not supported!")
 
     def forward(self, img_patches: torch.Tensor) -> torch.Tensor:
+        first_linear = self.projector[0]
+        if img_patches.dtype != first_linear.weight.dtype or img_patches.device != first_linear.weight.device:
+            img_patches = img_patches.to(device=first_linear.weight.device, dtype=first_linear.weight.dtype)
         return self.projector(img_patches)
 
 
@@ -50,4 +55,10 @@ class FusedMLPProjector(nn.Module):
             raise ValueError(f"Fused Projector with `{mlp_type = }` is not supported!")
 
     def forward(self, fused_img_patches: torch.Tensor) -> torch.Tensor:
+        first_linear = self.projector[0]
+        if (
+            fused_img_patches.dtype != first_linear.weight.dtype
+            or fused_img_patches.device != first_linear.weight.device
+        ):
+            fused_img_patches = fused_img_patches.to(device=first_linear.weight.device, dtype=first_linear.weight.dtype)
         return self.projector(fused_img_patches)

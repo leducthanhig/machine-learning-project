@@ -70,8 +70,8 @@ class VITRA_Paligemma(nn.Module):
         untied_cognition_token = self.configs.get("untied_cognition_token", True)
 
         # Use a separately learned `cognition_token_embedding` that does not share parameters with the word embedding matrix
-        # if `untied_cognition_token` is True. We initialize this separate `cognition_token_embedding` 
-        # with the word embedding parameter corresponding to the specified `cognition_token_id`. 
+        # if `untied_cognition_token` is True. We initialize this separate `cognition_token_embedding`
+        # with the word embedding parameter corresponding to the specified `cognition_token_id`.
 
         if untied_cognition_token:
             if overwatch.rank() == 0:
@@ -155,7 +155,7 @@ class VITRA_Paligemma(nn.Module):
 
         if self.use_state == 'VLM':
             self.vlm_state_encoder.requires_grad_(True)
-        
+
         if self.use_fov:
             self.fov_encoder.requires_grad_(True)
 
@@ -201,7 +201,7 @@ class VITRA_Paligemma(nn.Module):
         num_ddim_steps: int = 10,
         **kwargs,
     ):
-        
+
         actions = None
         action_loss = None
 
@@ -209,7 +209,7 @@ class VITRA_Paligemma(nn.Module):
         action_features = self.extract_cognition_token(vlm_features, attention_mask) #[B, D]
         model_dtype = next(self.act_model.net.parameters()).dtype
         action_features = action_features.to(model_dtype)
-        
+
         action_features_repeated = action_features.unsqueeze(0).repeat(repeated_diffusion_steps, 1, 1, 1)
         action_masks_repeated = action_masks.unsqueeze(0).repeat(repeated_diffusion_steps, 1, 1, 1)
 
@@ -267,7 +267,7 @@ class VITRA_Paligemma(nn.Module):
     ):
         B = input_ids.shape[0]
         word_embeds = self.model.get_input_embeddings()(input_ids)
-        input_ids_mask = attention_mask 
+        input_ids_mask = attention_mask
 
         cog_ids = torch.ones_like(input_ids[:, 0:1]) * self.cognition_token_id # [B, 1]
         cog_embeds = self.model.get_input_embeddings()(cog_ids)
@@ -275,7 +275,7 @@ class VITRA_Paligemma(nn.Module):
 
         if hasattr(self, 'cognition_token') and self.cognition_token is not None:
             assert self.cognition_token.shape[0] == cog_embeds.shape[-1], f"cognition token shape {self.cognition_token.shape} does not match cog embeds shape {cog_embeds.shape}"
-            cog_embeds = self.cognition_token.unsqueeze(0).unsqueeze(0).expand(B, -1, -1) 
+            cog_embeds = self.cognition_token.unsqueeze(0).unsqueeze(0).expand(B, -1, -1)
 
         # Build the list of embeddings and masks to concatenate
         embeds_list = [word_embeds]
@@ -286,12 +286,26 @@ class VITRA_Paligemma(nn.Module):
             current_state = current_state * current_state_mask.to(current_state.dtype)
             state_embeds = self.state_encoder(torch.cat([current_state, current_state_mask.to(current_state.dtype)], dim=1))
             state_ids_mask = torch.ones((B, 1), dtype=torch.bool).to(input_ids_mask.device)
-        
+
             embeds_list.append(state_embeds.unsqueeze(1))
             masks_list.append(state_ids_mask)
             num_additional_tokens += 1
 
         if self.use_fov:
+            if fov is None:
+                raise ValueError("`fov` must be provided when `use_fov` is True.")
+            if fov.ndim == 1:
+                fov = fov.unsqueeze(0)
+            if fov.shape[0] != B:
+                raise ValueError(f"Invalid `fov` batch dimension: expected {B}, got {fov.shape[0]}")
+
+            # Ensure dtype/device match the encoder parameters (common issue: float64 fov from numpy)
+            fov_param = next(self.fov_encoder.parameters(), None)
+            if fov_param is not None:
+                fov = fov.to(device=fov_param.device, dtype=fov_param.dtype)
+            else:
+                fov = fov.to(device=input_ids.device, dtype=word_embeds.dtype)
+
             fov_embeds = self.fov_encoder(fov)
             fov_ids_mask = torch.ones((B, 1), dtype=torch.bool).to(input_ids_mask.device)
 
@@ -308,7 +322,7 @@ class VITRA_Paligemma(nn.Module):
         inputs_embeds = torch.cat(embeds_list, dim=1)
         inputs_masks = torch.cat(masks_list, dim=1)
 
-        # Note: Here we only use `self.cognition_token_id` as a placeholder for the token corresponding to the FOV or states (if any) input. 
+        # Note: Here we only use `self.cognition_token_id` as a placeholder for the token corresponding to the FOV or states (if any) input.
         # In practice, the embedding passed to the LLM will be replaced with the actual FOV or states (if any) embedding.
         additional_tokens = torch.full((B, num_additional_tokens), self.cognition_token_id, dtype=input_ids.dtype, device=input_ids.device)
 
@@ -414,12 +428,12 @@ class VITRA_Paligemma(nn.Module):
         )
 
         _, action_loss = self._forward_act_model(
-            vlm_features = output_hs, 
-            action_labels = action_labels, 
-            attention_mask = inputs_masks, 
-            action_masks = action_masks, 
-            current_state = current_state, 
-            current_state_mask = current_state_mask, 
+            vlm_features = output_hs,
+            action_labels = action_labels,
+            attention_mask = inputs_masks,
+            action_masks = action_masks,
+            current_state = current_state,
+            current_state_mask = current_state_mask,
             mode = mode,
             repeated_diffusion_steps = self.repeated_diffusion_steps,
         )
@@ -432,20 +446,20 @@ class VITRA_Paligemma(nn.Module):
         width, height = image.size
 
         return image
-        
+
 
     def predict_action(
-        self, 
-        image, 
-        instruction: str, 
-        current_state, 
-        current_state_mask, 
-        use_ddim=True, 
-        num_ddim_steps=10, 
-        cfg_scale=5.0, 
-        action_mask_torch=None, 
-        fov=None, 
-        sample_times=1, 
+        self,
+        image,
+        instruction: str,
+        current_state,
+        current_state_mask,
+        use_ddim=True,
+        num_ddim_steps=10,
+        cfg_scale=5.0,
+        action_mask_torch=None,
+        fov=None,
+        sample_times=1,
         use_cache=False
     ) -> np.ndarray:
         """
