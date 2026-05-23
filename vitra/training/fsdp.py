@@ -42,7 +42,7 @@ from vitra.training.metrics import VLAMetrics
 from vitra.utils.overwatch import initialize_overwatch
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
-overwatch = initialize_overwatch(__name__)  
+overwatch = initialize_overwatch(__name__)
 
 
 def get_constant_schedule_with_freeze_warmup(
@@ -67,12 +67,12 @@ def split_modality_collator(
 ):
     """
     Split model parameters into vlm backbone and other (action model) groups with separate decay settings.
-    
+
     Returns:
         Tuple of (backbone_decay, backbone_no_decay, other_decay, other_no_decay) parameter lists
     """
     backbone_decay, backbone_no_decay, other_decay, other_no_decay = [], [], [], []
-    
+
     def is_backbone_param(name: str) -> bool:
         """Check if the parameter is part of the vision or text backbone."""
         if move_word_embedding_to_action_model and "embed_tokens" in name:
@@ -82,12 +82,12 @@ def split_modality_collator(
     for name, param in vla.named_parameters():
         if not param.requires_grad:
             continue
-        
+
         # Check parameters that should not have weight decay
         no_weight_decay = param.ndim <= 1 or name.endswith(".bias")
         if "cognition_token" in name:
             no_weight_decay = not cognition_token_weight_decay
-        
+
         # Categorize parameters
         if no_weight_decay:
             if is_backbone_param(name):
@@ -107,7 +107,7 @@ def split_modality_collator(
                 other_decay.append(param)
                 if verbose:
                     overwatch.info(f"Parameter `{name}` is not part of the backbone and has decay; added to `other_decay`")
-    
+
     return backbone_decay, backbone_no_decay, other_decay, other_no_decay
 
 
@@ -197,12 +197,12 @@ class VLAFSDPStrategy(TrainingStrategy):
         checkpoint_dir = run_dir / "checkpoints"/ checkpoint_name
         if overwatch.is_rank_zero():
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        
+
         def save_with_time(state_dict, path):
             overwatch.info(f"Saving state dict to {path} start at {datetime.now()}")
             torch.save(state_dict, path)
             overwatch.info(f"Saving state dict to {path} end at {datetime.now()}")
-        
+
         # Gather full state dictionary from shards
         with FSDP.state_dict_type(self.vla, self.fsdp_state_dict_type, self.fsdp_save_policy, self.fsdp_save_optimizer_policy):
             overwatch.info("Gathering model state")
@@ -221,23 +221,44 @@ class VLAFSDPStrategy(TrainingStrategy):
             if overwatch.is_rank_zero():
                 threading.Thread(target=save_with_time, args=(model_state, checkpoint_dir / 'weights.pt')).start()
                 threading.Thread(target=save_with_time, args=(optim_state, checkpoint_dir / 'optimizer.pt')).start()
-            
+
             dist.barrier()
 
-    def load_optimizer_and_scheduler(self, checkpoint_folder: str) -> None:
-        """Load optimizer and scheduler state from checkpoint."""
+    def save_weights_only(self, run_dir: Path, global_step: int, epoch: int) -> None:
+        """Save only the model weights (no optimizer state) — ~12.7 GB vs ~51 GB for a full checkpoint."""
+        assert isinstance(self.vla, FSDP), "FSDPStrategy.save_weights_only assumes VLM is already wrapped in FSDP!"
+        checkpoint_dir = run_dir / "checkpoints" / f"final-epoch={epoch}-step={global_step}.ckpt"
+        if overwatch.is_rank_zero():
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        overwatch.info(f"Saving final weights-only checkpoint to {checkpoint_dir}")
+        with FSDP.state_dict_type(self.vla, self.fsdp_state_dict_type, self.fsdp_save_policy):
+            model_state = self.vla.state_dict()
+            if overwatch.is_rank_zero():
+                torch.save(model_state, checkpoint_dir / "weights.pt")
+                with open(checkpoint_dir / "meta.json", "w") as f:
+                    json.dump({"epoch": epoch, "global_step": global_step}, f)
+                overwatch.info(f"Weights-only checkpoint saved to {checkpoint_dir}")
+
+        if dist.is_initialized():
+            dist.barrier()
+
+    def load_optimizer_and_scheduler(self, checkpoint_folder: str, resume_step: int = 0) -> bool:
+        """Load optimizer state from checkpoint, or restore scheduler position from the step count."""
         assert isinstance(self.vla, FSDP), "FSDPStrategy.load_optimizer_and_scheduler assumes VLM is already wrapped in FSDP!"
-        
+
         checkpoint_folder = Path(checkpoint_folder)
         optimizer_path = checkpoint_folder / "optimizer.pt"
-        
+
         if not optimizer_path.exists():
             overwatch.warning(f"Optimizer checkpoint not found at {optimizer_path}!")
-            return
-        
+            if resume_step > 0:
+                self.advance_scheduler(resume_step)
+            return False
+
         # Load checkpoint (FSDP handles device placement automatically)
         optim_state_dict = torch.load(optimizer_path, map_location="cpu")
-        
+
         with FSDP.state_dict_type(
             self.vla,
             self.fsdp_state_dict_type,
@@ -247,9 +268,25 @@ class VLAFSDPStrategy(TrainingStrategy):
             optim_state_dict = FSDP.optim_state_dict_to_load(self.vla, self.optimizer, optim_state_dict)
             # optim_state_dict = FSDP.optim_state_dict_to_load(self.vla, self.optimizer, optim_state_dict["optimizer"])
             self.optimizer.load_state_dict(optim_state_dict)
-        
+
         overwatch.info(f"Loaded optimizer state dict from {optimizer_path}")
-        
+        if resume_step > 0:
+            self.advance_scheduler(resume_step)
+        return True
+
+    def advance_scheduler(self, step: int) -> None:
+        """Move a fresh LR scheduler to the LR used after `step` optimizer updates."""
+        if step <= 0:
+            return
+
+        for _ in range(step):
+            self.lr_scheduler.step()
+
+        last_lr = self.lr_scheduler.get_last_lr()
+        overwatch.info(
+            f"Advanced LR scheduler to step {step}; current learning rates: {last_lr}"
+        )
+
     def run_setup(
         self,
         run_dir: Path,
@@ -287,7 +324,7 @@ class VLAFSDPStrategy(TrainingStrategy):
             limit_all_gathers=True,
             use_orig_params=True,
         )
-        
+
         # Setup gradient checkpointing
         if self.enable_gradient_checkpointing:
             # For Gradient Checkpointing under FSDP --> we make the same assumption as in the DDP/other strategies; the
@@ -373,13 +410,13 @@ class VLAFSDPStrategy(TrainingStrategy):
             # Create separate optimizers for backbone and action model
             backbone_optimizer = AdamW(backbone_groups, betas=self.optimizer_betas)
             action_model_optimizer = AdamW(action_model_groups, betas=self.optimizer_betas)
-            
+
             # Create schedulers for each component
             backbone_scheduler = get_constant_schedule_with_freeze_warmup(
                 backbone_optimizer, num_warmup_steps=num_warmup_steps
             )
             action_model_scheduler = get_constant_schedule(action_model_optimizer)
-            
+
             # Create the multi-group scheduler
             self.lr_scheduler = MultiGroupLRScheduler(
                 self.optimizer, backbone_scheduler, action_model_scheduler
@@ -435,7 +472,7 @@ class VLAFSDPStrategy(TrainingStrategy):
     ) -> None:
         """Run the VLA training loop for the given dataloader; log losses and action metrics to metrics."""
         vla_dataset = dataloader.dataset
-        
+
         status = metrics.get_status()
         with tqdm(
             total=(self.epochs * (len(dataloader) // self.grad_accumulation_steps)) if self.max_steps is None else self.max_steps,
@@ -475,13 +512,13 @@ class VLAFSDPStrategy(TrainingStrategy):
 
                     # Commit loss and backward
                     metrics.commit(
-                        loss=loss, 
+                        loss=loss,
                         left_hand_6d=prediction["left_hand_6d"],
                         left_hand_joints=prediction["left_hand_joints"],
                         right_hand_6d=prediction["right_hand_6d"],
                         right_hand_joints=prediction["right_hand_joints"],
                     )
-                    
+
                     normalized_loss = loss / self.grad_accumulation_steps
                     normalized_loss.backward()
 
@@ -512,34 +549,38 @@ class VLAFSDPStrategy(TrainingStrategy):
                             current_lr = lr_dict['backbone_decay_lr']  # backbone learning rate
                         else:
                             current_lr = self.lr_scheduler.get_last_lr()[0]
-                        
+
                         metrics.commit(update_step_time=True, global_step=metrics.global_step + 1, epoch=epoch, lr=current_lr, **lr_dict)
                         status = metrics.push()
+                        progress.set_description(status)
+                        progress.update()
 
-                        # Check for Save Interval or Max Steps & Save Checkpoint
-                        if (terminate := (self.max_steps is not None and metrics.global_step >= self.max_steps)) or (
-                            (metrics.global_step % save_interval) == 0
-                        ):
+                        # Check for Max Steps termination
+                        terminate = self.max_steps is not None and metrics.global_step >= self.max_steps
+
+                        # Mid-training checkpoint (disabled when save_interval is very large)
+                        if not terminate and (metrics.global_step % save_interval) == 0:
                             self.save_checkpoint(
                                 metrics.run_dir, metrics.global_step, epoch, only_trainable=not save_full_model
                             )
                             dist.barrier()
 
                         if terminate:
+                            # Save weights-only checkpoint at the end of training
+                            self.save_weights_only(metrics.run_dir, metrics.global_step, epoch)
                             return
                     train_idx += 1
 
-                    # Update progress bar
-                    progress.set_description(status)
-                    progress.update()
-                    
-                # Save epoch checkpoint if needed
+                # Epoch checkpoint (disabled when epoch_save_interval is very large)
                 if epoch % epoch_save_interval == 0:
                     self.save_checkpoint(
                         metrics.run_dir, metrics.global_step, epoch, only_trainable=not save_full_model, is_epoch_end=True
                     )
                 gc.collect()
                 torch.cuda.empty_cache()
+
+            # Save weights-only checkpoint after all epochs complete
+            self.save_weights_only(metrics.run_dir, metrics.global_step, epoch)
 
 # Custom LR Scheduler for different parameter groups
 class MultiGroupLRScheduler:
@@ -551,34 +592,34 @@ class MultiGroupLRScheduler:
         self.optimizer = optimizer
         self.backbone_scheduler = backbone_scheduler
         self.action_model_scheduler = action_model_scheduler
-        
+
         # Assume first two groups are backbone (decay/no_decay), last two are action model
         self.backbone_group_indices = [0, 1]
         self.action_model_group_indices = [2, 3]
-    
+
     def step(self):
         """Step both schedulers and update the corresponding parameter groups"""
         # Step the schedulers
         self.backbone_scheduler.step()
         self.action_model_scheduler.step()
-        
+
         # Update backbone parameter groups with backbone scheduler's learning rates
         backbone_lrs = self.backbone_scheduler.get_last_lr()
         for i, group_idx in enumerate(self.backbone_group_indices):
             # Both backbone groups should use the same LR from backbone scheduler
             self.optimizer.param_groups[group_idx]['lr'] = backbone_lrs[0] if len(backbone_lrs) == 1 else backbone_lrs[i]
-        
+
         # Update action model parameter groups with action model scheduler's learning rates
         action_model_lrs = self.action_model_scheduler.get_last_lr()
         for i, group_idx in enumerate(self.action_model_group_indices):
             # Both action model groups should use the same LR from action model scheduler
             self.optimizer.param_groups[group_idx]['lr'] = action_model_lrs[0] if len(action_model_lrs) == 1 else action_model_lrs[i]
-    
+
     def get_last_lr(self):
         """Return the last learning rates for all parameter groups"""
         backbone_lrs = self.backbone_scheduler.get_last_lr()
         action_model_lrs = self.action_model_scheduler.get_last_lr()
-        
+
         # Return LRs in the order of parameter groups: [backbone_decay, backbone_no_decay, action_decay, action_no_decay]
         return [
             backbone_lrs[0] if len(backbone_lrs) == 1 else backbone_lrs[0],  # backbone_decay

@@ -51,7 +51,7 @@ overwatch = initialize_overwatch(__name__)
 def experiment(variant):
     """
     Main training experiment function for VITRA VLA models.
-    
+
     Args:
         variant: Configuration dictionary containing all training parameters including:
             - Model architecture settings
@@ -62,29 +62,29 @@ def experiment(variant):
     # === Device Setup ===
     torch.cuda.set_device(device_id := overwatch.local_rank())
     torch.cuda.empty_cache()
-    
+
     # === Weights & Biases Setup ===
     overwatch.info("VITRA VLA Training :: Creating Folders", ctx_level=1)
     # wandb_api_key = os.getenv("WANDB_API_KEY")
     # if wandb_api_key is None:
     #     raise ValueError("Please set the WANDB_API_KEY environment variable.")
     # wandb.login(key=wandb_api_key)
- 
+
     # === Directory Setup ===
     os.makedirs(variant["log_root"], exist_ok=True)
     os.makedirs(variant["output_root"], exist_ok=True)
     os.makedirs(variant["cache_root"], exist_ok=True)
-    
+
     # === Run ID and Checkpoint Directory ===
     # Create unique run identifier based on task name and batch configuration
     run_id = variant["task_name"] if "task_name" in variant else None
     batch_size = variant["batch_size"]
     total_batch_size = variant["total_batch_size"]
     run_id = f"{run_id}_TB{total_batch_size}_B{batch_size}_bf16{variant['use_bf16']}"
-    
+
     checkpoint_dir = os.path.join(variant["output_root"], run_id)
     os.makedirs(checkpoint_dir, exist_ok=True)
-    
+
     # === Random Seed Setup ===
     worker_init_fn = set_global_seed(variant["seed"], get_worker_init_fn=True)
 
@@ -98,7 +98,7 @@ def experiment(variant):
             return str(d)
         else:
             return d
-    
+
     variant_str = copy.deepcopy(variant)
     copied_variant = posix_to_str(variant_str)
 
@@ -109,20 +109,20 @@ def experiment(variant):
         print(json.dumps(copied_variant, indent=2))
 
     if dist.is_initialized():
-    dist.barrier()
-    
+        dist.barrier()
+
     # === Model Loading and Checkpoint Resume ===
     overwatch.info("Loading model", ctx_level=1)
     resume_step = 0
     resume_epoch = 0
     model_load_path = variant["model_load_path"]
-    
+
     # Handle checkpoint resumption
     if variant["resume"]:
         # Auto-discover last checkpoint if path not specified
         if model_load_path is None:
             model_load_path = find_last_checkpoint(checkpoint_dir)
-        
+
         # Parse resume epoch and step from checkpoint path
         if model_load_path is not None:
             resume_epoch, resume_step = get_epoch_and_step_from_checkpoint(model_load_path)
@@ -158,7 +158,7 @@ def experiment(variant):
     all_params = sum(p.numel() for p in model.parameters())
     if overwatch.rank() == 0:
         overwatch.info(f"Trainable Model Parameters: {total_params/1e6:.2f}M/{all_params/1e6:.2f}M")
-    
+
     processor = model.processor
 
     # === Dataset Creation ===
@@ -183,7 +183,7 @@ def experiment(variant):
         state_mask_prob=variant["train_dataset"].get('state_mask_prob', 0.1),
         target_image_height=variant["train_dataset"].get('target_image_height', 224),
     )
-    
+
     # === Training Strategy Setup ===
     # Initialize FSDP (Fully Sharded Data Parallel) training strategy
     training_strategy = VLAFSDPStrategy(
@@ -210,14 +210,14 @@ def experiment(variant):
         move_word_embedding_to_action_model=variant["trainer"].get("move_word_embedding_to_action_head", False),
         optimizer_betas=variant["trainer"].get("optimizer_betas", (0.9, 0.999)),
     )
-    
+
     # === FSDP Wrapping and Checkpointing Policies ===
     # Define which modules should be wrapped by FSDP and which should use activation checkpointing
     if variant["vla_name"] == "VITRA_Paligemma":
         auto_wrap_policy, checkpointing_policy = get_fsdp_wrap_policy_and_checkpointing(variant["trainer"])
     else:
         raise NotImplementedError(f"Unsupported VLA name: {variant['vla_name']}")
-    
+
     # Initialize FSDP wrapping, optimizer, and learning rate scheduler
     training_strategy.run_setup(
         run_dir=checkpoint_dir,
@@ -225,11 +225,12 @@ def experiment(variant):
         auto_wrap_policy_modules=auto_wrap_policy,
         checkpointing_policy_modules=checkpointing_policy,
     )
-    
-    # Load optimizer and scheduler state if resuming from checkpoint
+
+    # Restore optimizer state when present. For weights-only checkpoints, keep the
+    # fresh optimizer but advance the LR scheduler to the parsed resume step.
     if variant["resume"] == True and model_load_path is not None:
-        training_strategy.load_optimizer_and_scheduler(model_load_path)
-    
+        training_strategy.load_optimizer_and_scheduler(model_load_path, resume_step=resume_step)
+
     # === Metrics Tracking Setup ===
     # Initialize metrics logging with Weights & Biases
     trackers = ["jsonl"]
@@ -244,10 +245,10 @@ def experiment(variant):
         resume_step=resume_step,
         resume_epoch=resume_epoch,
     )
-    
+
     # === DataLoader Creation ===
     overwatch.info("Creating Dataloader", ctx_level=1)
-    
+
     num_workers = variant["num_workers"] if variant["num_workers"] is not None else variant["train_dataset"]["num_workers"]
     prefetch_factor = variant["prefetch_factor"] if variant["prefetch_factor"] is not None else variant["train_dataset"]["prefetch_factor"]
 
@@ -256,7 +257,7 @@ def experiment(variant):
 
     if overwatch.rank() == 0:
         print(f"num_workers: {num_workers}, prefetch_factor: {prefetch_factor}")
-    
+
     # Set batch sampler epoch for proper data shuffling when resuming
     batch_sampler.set_epoch(resume_epoch, resume_step * training_strategy.grad_accumulation_steps)
 
@@ -292,22 +293,22 @@ def experiment(variant):
     # === Cleanup ===
     overwatch.info("... and that's all, folks!")
     if dist.is_initialized():
-    dist.barrier()
-    dist.destroy_process_group()
+        dist.barrier()
+        dist.destroy_process_group()
 
 def get_fsdp_wrap_policy_and_checkpointing(configs):
     """
     Get FSDP auto-wrapping policy and activation checkpointing policy for PaliGemma models.
-    
+
     The auto-wrap policy determines which module types should be individually wrapped by FSDP,
     allowing for efficient memory usage and communication in distributed training.
-    
+
     The checkpointing policy determines which modules should use activation checkpointing
     (gradient checkpointing) to trade computation for memory during training.
-    
+
     Args:
         configs: Trainer configuration dictionary containing strategy settings
-        
+
     Returns:
         Tuple of (auto_wrap_policy, checkpointing_policy):
             - auto_wrap_policy: Set of module classes to wrap with FSDP
@@ -315,15 +316,15 @@ def get_fsdp_wrap_policy_and_checkpointing(configs):
     """
     if 'strategy' not in configs or configs['strategy'] == 'ddp':
         raise NotImplementedError("FSDP strategy not specified or DDP selected.")
-    
+
     # Import model layer classes for wrapping
     from transformers.models.gemma2.modeling_gemma2 import Gemma2DecoderLayer
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaMultiModalProjector
     from transformers.models.siglip.modeling_siglip import SiglipEncoderLayer, SiglipVisionTransformer
-    
+
     from vitra.models.action_model import DiT
     from vitra.utils.nn_utils import MLPProjector
-    
+
     # Define which module types should be wrapped by FSDP
     policy = {
         SiglipEncoderLayer,  # Vision encoder layers
@@ -333,33 +334,33 @@ def get_fsdp_wrap_policy_and_checkpointing(configs):
         PaliGemmaMultiModalProjector,  # Vision-language projection layer
         MLPProjector  # MLP projection layers
     }
-    
+
     # Enable gradient checkpointing for Gemma2 layers if specified
     checkpointing_policy = (
         {Gemma2DecoderLayer}
         if configs["strategy"] == "fsdp_paligemma_with_checkpointing"
         else None
     )
-    
+
     return policy, checkpointing_policy
 
 def update_configs(configs, args):
     """
     Update configuration dictionary with command-line arguments.
-    
+
     Command-line arguments take precedence over config file values. This function
     handles both top-level parameters and nested dictionaries (e.g., trainer settings).
-    
+
     Args:
         configs: Base configuration dictionary loaded from YAML/JSON config file
         args: Parsed command-line arguments dictionary
-        
+
     Returns:
         Updated configuration dictionary with command-line overrides applied
     """
     if args["task_name"] is not None:
         configs["task_name"] = args["task_name"]
-    
+
     configs["use_bf16"] = (
         args["use_bf16"]
         if args["use_bf16"] is not None
@@ -368,7 +369,7 @@ def update_configs(configs, args):
 
     if args["data_mix"] is not None:
         configs["train_dataset"]["data_mix"] = args["data_mix"]
-    
+
     configs["output_root"] = Path(configs["output_root"])
     configs["log_root"] = Path(configs["log_root"])
     configs["cache_root"] = Path(configs["cache_root"]) / configs["model"]
@@ -385,17 +386,17 @@ def update_configs(configs, args):
                     configs[k][sub_k] = sub_v
         elif v is not None:
             configs[k] = v
-    
+
     return configs
 
 def parse_args():
     """
     Parse command-line arguments for training configuration.
-    
+
     Arguments are organized into two groups:
     1. Global arguments (experiment settings, paths, data configuration)
     2. Trainer arguments (training hyperparameters and strategy)
-    
+
     Returns:
         Dictionary with structure:
         {
@@ -410,7 +411,7 @@ def parse_args():
         }
     """
     parser = argparse.ArgumentParser(description="VITRA VLA Training Script")
-    
+
     # === Global Arguments ===
     parser.add_argument(
         "--config",
@@ -495,7 +496,7 @@ def parse_args():
         type=int,
         help="Number of batches to prefetch per worker"
     )
-    
+
     # Capture global argument names before adding trainer group
     global_names = set(vars(parser.parse_known_args()[0]).keys())
 
@@ -519,7 +520,7 @@ def parse_args():
         type=int,
         help="Maximum number of training steps (overrides epochs)"
     )
-    
+
     # Capture trainer argument names (difference from global)
     trainer_names = set(vars(parser.parse_known_args()[0]).keys()) - global_names
 
@@ -527,7 +528,7 @@ def parse_args():
     args = {}
     trainer_args = {}
     temp_args = vars(parser.parse_args())
-    
+
     # Separate global and trainer arguments
     for k, v in temp_args.items():
         if k in global_names:
@@ -549,12 +550,12 @@ if __name__ == "__main__":
 
     configs = load_config(args.get("config"))
     configs = update_configs(configs, args)
-    
+
     # Initialize distributed training backend (NCCL for NVIDIA GPUs)
-# FSDP always requires a process group, even on a single GPU.
+    # FSDP always requires a process group, even on a single GPU.
     # When launched with plain `python` (not torchrun), set env defaults for single-process mode.
     if not dist.is_initialized():
-os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("RANK", "0")
         os.environ.setdefault("WORLD_SIZE", "1")
         os.environ.setdefault("LOCAL_RANK", "0")
         os.environ.setdefault("MASTER_ADDR", "localhost")

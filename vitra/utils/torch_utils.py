@@ -19,6 +19,7 @@ Terminology
 
 import os
 import random
+import re
 from typing import Callable, Optional
 
 import numpy as np
@@ -84,12 +85,14 @@ def get_epoch_and_step_from_checkpoint(checkpoint_path):
     """Parse epoch and step numbers from checkpoint path."""
     if checkpoint_path is None:
         return 0, 0
-    
+
     try:
         basename = os.path.basename(checkpoint_path)
-        arr = basename.split('.')[0].split('-')
-        epoch = int(arr[0].split('=')[1])
-        step = int(arr[1].split('=')[1])
+        match = re.search(r"(?:^|-)epoch=(\d+)-step=(\d+)", basename)
+        if match is None:
+            raise ValueError("checkpoint name must contain 'epoch=<n>-step=<n>'")
+        epoch = int(match.group(1))
+        step = int(match.group(2))
         return epoch, step
     except Exception as e:
         print(f"Error parsing checkpoint path {checkpoint_path}: {e}")
