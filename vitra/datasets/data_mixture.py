@@ -15,4 +15,8 @@ HAND_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
         ("epic", 1.0),
         ('ssv2', 5.0),
     ],
+    "magic_mix_epic_ssv2": [
+        ("epic", 1.0),
+        ('ssv2', 5.0),
+    ],
 }
