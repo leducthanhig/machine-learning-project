@@ -34,18 +34,21 @@ def get_video_length(name):
     del video_reader
     return num_frames
 
-def load_video_decord(name, 
-                      frame_index=None, 
-                      num_random=2, 
-                      load_full_video=False, 
-                      sampling_step=1, 
+def load_video_decord(name,
+                      frame_index=None,
+                      num_random=2,
+                      load_full_video=False,
+                      sampling_step=1,
                       max_frame_cnt=5,
                       is_continuous=False,
                       rotation=False,
                       st_list=None,
                       crop_size=None,
                       ):
-    video_reader = decord.VideoReader(name)
+    if name.lower().endswith('.webm'):
+        video_reader = decord.VideoReader(name, num_threads=1)
+    else:
+        video_reader = decord.VideoReader(name, num_threads=48)
     num_frames = len(video_reader)
     if frame_index is None:
         if load_full_video:

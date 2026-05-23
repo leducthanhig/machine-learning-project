@@ -233,10 +233,10 @@ class VLAMetrics:
         self.trackers = []
         for tracker_type in active_trackers:
             if tracker_type == "jsonl":
-                tracker = JSONLinesTracker(run_id, run_dir, hparams)
+                tracker = JSONLinesTracker(run_id, self.run_dir, hparams)
             elif tracker_type == "wandb":
                 tracker = WeightsBiasesTracker(
-                    run_id, run_dir, hparams, project=wandb_project, entity=wandb_entity, group="vla-train"
+                    run_id, self.run_dir, hparams, project=wandb_project, entity=wandb_entity, group="vla-train"
                 )
             else:
                 raise ValueError(f"Tracker with type `{tracker_type}` is not supported!")
@@ -264,10 +264,10 @@ class VLAMetrics:
     def get_status(self, loss: Optional[torch.Tensor] = None) -> str:
         lr = self.state["lr"][-1] if len(self.state["lr"]) > 0 else 0
         if loss is None:
-            return f"=>> [Epoch {self.epoch:03d}] Global Step {self.global_step:06d} =>> Backbone LR :: {lr:.6f}"
+            return f"[epoch={self.epoch} lr={lr:.6f}]"
 
-        # Otherwise, embed `loss` in status report!
-        return f"=>> [Epoch {self.epoch:03d}] Global Step {self.global_step:06d} =>> Backbone LR :: {lr:.6f} - Loss :: {loss:.4f}"
+        # Otherwise embed `loss` in status report!
+        return f"[epoch={self.epoch} lr={lr:.6f} loss={loss:.4f}]"
 
     def commit(
         self,
@@ -317,11 +317,13 @@ class VLAMetrics:
         # Note :: Raw Loss is an Average over Gradient Accumulation Steps --> No Smoothing!
         loss_raw = torch.stack(list(self.state["loss_raw"])).mean().item()
         loss = torch.stack(list(self.state["loss"])).mean().item()
-        step_time = np.mean(list(self.state["step_time"]))
-        lr = self.state["lr"][-1]
-        action_model_lr = self.other_state.get("action_decay_lr", None)[-1]
+        step_time = float(np.mean(list(self.state["step_time"])))
+        lr = float(self.state["lr"][-1])
+        # action_model_lr may be a Tensor stored in other_state
+        _action_lr_deque = self.other_state.get("action_decay_lr", None)
+        action_model_lr = float(_action_lr_deque[-1]) if _action_lr_deque else 0.0
         status = self.get_status(loss)
-        # Additional metrics from other_state
+        # Additional metrics from other_state — ensure Python scalars
         additional_metrics = {
             f"Other/{key}": torch.stack(list(value)).mean().item()
             for key, value in self.other_state.items()

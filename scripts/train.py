@@ -11,6 +11,7 @@ import datetime
 import faulthandler
 import json
 import os
+import sys
 import random
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -18,8 +19,10 @@ from typing import Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.distributed as dist
-import wandb
+# import wandb
 from torch.utils.data import DataLoader
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from vitra.datasets.materialize import get_vla_dataset_and_collator
 from vitra.models.vla_builder import build_vla, load_vla_checkpoint
@@ -62,10 +65,10 @@ def experiment(variant):
     
     # === Weights & Biases Setup ===
     overwatch.info("VITRA VLA Training :: Creating Folders", ctx_level=1)
-    wandb_api_key = os.getenv("WANDB_API_KEY")
-    if wandb_api_key is None:
-        raise ValueError("Please set the WANDB_API_KEY environment variable.")
-    wandb.login(key=wandb_api_key)
+    # wandb_api_key = os.getenv("WANDB_API_KEY")
+    # if wandb_api_key is None:
+    #     raise ValueError("Please set the WANDB_API_KEY environment variable.")
+    # wandb.login(key=wandb_api_key)
  
     # === Directory Setup ===
     os.makedirs(variant["log_root"], exist_ok=True)
@@ -105,6 +108,7 @@ def experiment(variant):
         overwatch.info(f"Config saved to {checkpoint_dir}", ctx_level=1)
         print(json.dumps(copied_variant, indent=2))
 
+    if dist.is_initialized():
     dist.barrier()
     
     # === Model Loading and Checkpoint Resume ===
@@ -163,8 +167,8 @@ def experiment(variant):
         variant["train_dataset"]["data_root_dir"],
         variant["train_dataset"]["data_mix"],
         augmentation=variant["train_dataset"]["augmentation"],
-        shard_num=dist.get_world_size(),  # Total number of distributed processes
-        shard_index=dist.get_rank(),  # Current process rank
+        shard_num=overwatch.world_size(),  # Total number of distributed processes
+        shard_index=overwatch.rank(),  # Current process rank
         seed=variant["seed"],
         future_action_window_size=variant["fwd_pred_next_n"] - 1,
         processor=processor,
@@ -228,11 +232,11 @@ def experiment(variant):
     
     # === Metrics Tracking Setup ===
     # Initialize metrics logging with Weights & Biases
-    trackers = ["wandb"]
+    trackers = ["jsonl"]
     overwatch.info(f"Creating Metrics with Active Trackers => `{trackers}`")
     metrics = VLAMetrics(
         trackers,
-        hparams=variant_str,
+        hparams=copied_variant,
         run_id=run_id,
         run_dir=checkpoint_dir,
         wandb_project=variant["wandb_project"],
@@ -256,7 +260,7 @@ def experiment(variant):
     # Set batch sampler epoch for proper data shuffling when resuming
     batch_sampler.set_epoch(resume_epoch, resume_step * training_strategy.grad_accumulation_steps)
 
-    setup_seed(variant["seed"], rank=torch.distributed.get_rank())
+    setup_seed(variant["seed"], rank=overwatch.rank())
 
     # Create PyTorch DataLoader with multi-process data loading
     dataloader = DataLoader(
@@ -287,6 +291,7 @@ def experiment(variant):
 
     # === Cleanup ===
     overwatch.info("... and that's all, folks!")
+    if dist.is_initialized():
     dist.barrier()
     dist.destroy_process_group()
 
@@ -546,7 +551,17 @@ if __name__ == "__main__":
     configs = update_configs(configs, args)
     
     # Initialize distributed training backend (NCCL for NVIDIA GPUs)
+# FSDP always requires a process group, even on a single GPU.
+    # When launched with plain `python` (not torchrun), set env defaults for single-process mode.
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl")
+os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("WORLD_SIZE", "1")
+        os.environ.setdefault("LOCAL_RANK", "0")
+        os.environ.setdefault("MASTER_ADDR", "localhost")
+        os.environ.setdefault("MASTER_PORT", "29500")
+
+        device_id = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(device_id)
+        dist.init_process_group(backend="nccl", device_id=torch.device('cuda', device_id))
 
     experiment(variant=configs)

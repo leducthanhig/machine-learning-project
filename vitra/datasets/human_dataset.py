@@ -383,15 +383,17 @@ class EpisodicDatasetCore(object):
 
         # ---------- read images --------------------
         # Retry mechanism: try up to 3 times to load video frames
+imgs = None
         for attempt in range(3):
             try:
                 imgs, _ = load_video_decord(video_path, frame_index=decode_ids, rotation=False)
                 break  # Success, exit the retry loop
             except Exception as e:
-                # if attempt == 2:
-                #     raise  # Raise the exception after 3 failed attempts
-                print(f"Warning: failed to load video frames from {video_path} (attempt {attempt+1}/3): {e}")
+                                print(f"Warning: failed to load video frames from {video_path} (attempt {attempt+1}/3): {e}")
                 time.sleep(0.1)
+
+if imgs is None:
+            raise RuntimeError(f"Failed to load video frames from {video_path} after 3 attempts")
 
         images = np.stack(imgs, axis=0)           # (L,H,W,3) uint8
         mask   = ~oob                             # (L,) bool
