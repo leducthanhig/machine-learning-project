@@ -26,8 +26,8 @@ from vitra.datasets.augment_utils import (
 from vitra.datasets.interp_utils import interp_mano_state
 from vitra.datasets.video_utils import load_video_decord
 from vitra.datasets.dataset_utils import (
-    compute_new_intrinsics_crop, 
-    compute_new_intrinsics_resize, 
+    compute_new_intrinsics_crop,
+    compute_new_intrinsics_resize,
     calculate_fov,
     ActionFeature,
     StateFeature,
@@ -39,22 +39,22 @@ from vitra.utils.data_utils import (
 
 class EpisodicDatasetCore(object):
     """Core dataset class for episodic hand manipulation data.
-    
+
     Handles loading and processing of video frames, MANO hand parameters,
     and action sequences for hand-centric manipulation tasks.
     """
     def __init__(
-        self, 
-        video_root, 
-        annotation_file, 
-        label_folder, 
-        training_path=None, 
-        statistics_path=None, 
-        augmentation=True, 
-        flip_augmentation=True, 
-        set_none_ratio=0.0, 
-        action_type="angle", 
-        use_rel=False, 
+        self,
+        video_root,
+        annotation_file,
+        label_folder,
+        training_path=None,
+        statistics_path=None,
+        augmentation=True,
+        flip_augmentation=True,
+        set_none_ratio=0.0,
+        action_type="angle",
+        use_rel=False,
         upsample_factor=1.0,
         target_image_height=224,
         clip_len=2000,
@@ -82,6 +82,39 @@ class EpisodicDatasetCore(object):
         if statistics_path is not None:
             self.data_statistics = read_dataset_statistics(statistics_path)
 
+        print("Filtering missing videos...")
+        available_videos_cache = {}
+        valid_indices = []
+
+        for idx in tqdm(range(self.num_valid_frames), desc="Filtering indices"):
+            corr = self.index_frame_pair[idx]
+            episode_id = self.index_to_episode_id[corr[0]]
+            dataset_name = episode_id.split('_')[0]
+
+            if dataset_name == 'epic':
+                # Load episode npy to get video_name
+                video_name = '_'.join(episode_id.split('_')[2:4])
+
+                # Check if we already verified this video
+                if video_name not in available_videos_cache:
+                    # Construct expected path (adjust for part_index if clip_len is used)
+                    expected_path = os.path.join(self.video_root, video_name + '.MP4')
+                    available_videos_cache[video_name] = os.path.exists(expected_path)
+
+                if not available_videos_cache[video_name]:
+                    continue  # Skip this frame, video is missing
+
+            valid_indices.append(idx)
+
+        # Reassign the filtered indices
+        if self.training_idx is not None:
+            self.training_idx = np.array(valid_indices)
+        else:
+            self.index_frame_pair = self.index_frame_pair[valid_indices]
+
+        self.num_valid_frames = len(valid_indices)
+        print(f"Filtered to {self.num_valid_frames} frames.")
+
         self.global_data_statistics = None
         self.clip_len = clip_len  # Video clip length in frames
         self.augmentation = augmentation
@@ -103,18 +136,18 @@ class EpisodicDatasetCore(object):
 
     def __len__(self):
         return self.num_valid_frames
-    
+
     @staticmethod
     @lru_cache(maxsize=256)          # ~256 MB worst case if each npy ≈1 MB
     def _load_episode_npy(episode_path: str):
         """Load episode data from .npy file with caching.
-        
+
         Uses LRU cache to keep up to 256 episodes in memory (~256 MB worst case).
         The cache automatically purges old entries when full.
-        
+
         Args:
             episode_path: Path to the .npy file containing episode data
-            
+
         Returns:
             Dictionary containing episode information
         """
@@ -173,12 +206,12 @@ class EpisodicDatasetCore(object):
         # -------- camera-space (anchor camera) ----------------------------
         R_cam_extend  = R_w2c[idx_anchor] @ R_mano_extend
         t_cam_extend  = (R_w2c[idx_anchor] @ t_mano_extend[..., None])[..., 0] + t_w2c[idx_anchor]
-        
+
 
         # -------- finger Euler (batched) ----------------------------------
         pose_euler_extend  = R.from_matrix(hand_P_extend.reshape(-1,3,3))     \
                             .as_euler('xyz', degrees=False).reshape(-1,45)
-        
+
         # -------- keypoints in mano space (batched) ----------------------------------
         joints_manospace_extend = (R_mano_extend.transpose(0, 2, 1) @ (joints_worldspace_extend.transpose(0, 2, 1) - t_mano_extend[..., None])).transpose(0,2,1)  # (W+1,21,3)
 
@@ -188,7 +221,7 @@ class EpisodicDatasetCore(object):
 
             pose_euler_extend = R.from_matrix(hand_P_extend.reshape(-1,3,3))     \
                             .as_euler('xyz', degrees=False).reshape(-1,45)
-            
+
             # set length back to W+1
             R_cam_extend = R_cam_extend[:W+1]
             t_cam_extend = t_cam_extend[:W+1]
@@ -196,7 +229,7 @@ class EpisodicDatasetCore(object):
             pose_euler_extend = pose_euler_extend[:W+1]
             joints_manospace_extend = joints_manospace_extend[:W+1]
             kept_extend = kept_extend[:W+1]
-        
+
         R_cam = R_cam_extend[:-1]
         t_cam = t_cam_extend[:-1]
         pose_euler = pose_euler_extend[:-1]
@@ -383,16 +416,16 @@ class EpisodicDatasetCore(object):
 
         # ---------- read images --------------------
         # Retry mechanism: try up to 3 times to load video frames
-imgs = None
+        imgs = None
         for attempt in range(3):
             try:
                 imgs, _ = load_video_decord(video_path, frame_index=decode_ids, rotation=False)
                 break  # Success, exit the retry loop
             except Exception as e:
-                                print(f"Warning: failed to load video frames from {video_path} (attempt {attempt+1}/3): {e}")
+                print(f"Warning: failed to load video frames from {video_path} (attempt {attempt+1}/3): {e}")
                 time.sleep(0.1)
 
-if imgs is None:
+        if imgs is None:
             raise RuntimeError(f"Failed to load video frames from {video_path} after 3 attempts")
 
         images = np.stack(imgs, axis=0)           # (L,H,W,3) uint8
@@ -402,11 +435,11 @@ if imgs is None:
 
     def _find_matching_texts(self, text_list, frame_id):
         """Find text annotations that overlap with the given frame.
-        
+
         Args:
             text_list: List of tuples (text, (start_frame, end_frame))
             frame_id: Current frame ID to check
-        
+
         Returns:
             matching_texts: List of matching text annotations
             matching_ranges: List of corresponding time ranges (start_frame, end_frame)
@@ -416,13 +449,13 @@ if imgs is None:
         """
         matching_texts = []
         matching_ranges = []
-        
+
         for text, (start_frame, end_frame) in text_list:
             # Check if frame_id is in the half-open interval [start_frame, end_frame)
             if start_frame <= frame_id < end_frame:
                 matching_texts.append(text)
                 matching_ranges.append((start_frame, end_frame))
-        
+
         return matching_texts, matching_ranges
 
     def _random_select_text(
@@ -456,7 +489,7 @@ if imgs is None:
     ):
 
         sub_type = 'right' if main_type == 'left' else 'left'
-        
+
         # Build main text
         # text_clip[main_type][0]: ('Place the pink cup on the table.', (0, 26))
         main_text_selected = self._random_select_text(
@@ -469,7 +502,7 @@ if imgs is None:
         # Build sub text
         sub_text_list = text_clip[sub_type]
         has_sub_text = len(sub_text_list) > 0
-        
+
         sub_oob, sub_idx_win = oob, idx_win
         sub_text_selected = "None."
         sub_win = (0, epi_len)  # Default to the full range if no text available
@@ -499,10 +532,10 @@ if imgs is None:
         idx_win_right = sub_idx_win if is_main_left else idx_win
         oob_left = oob if is_main_left else sub_oob
         oob_right = sub_oob if is_main_left else oob
-        
+
         text_left = main_text_selected if is_main_left else sub_text_selected
         text_right = sub_text_selected if is_main_left else main_text_selected
-        
+
         start_left = 0 if is_main_left else (sub_win[0] if has_sub_text else 0)
         start_right = (sub_win[0] if has_sub_text else 0) if is_main_left else 0
         end_left = epi_len - 1 if is_main_left else (sub_win[1] - 1 if has_sub_text else epi_len - 1)
@@ -514,14 +547,14 @@ if imgs is None:
 
     def _get_2d_traj_cur_to_end(self, idx_frame, epi, intrinsics, hand_type, image_size):
         """Get the 2D trajectory of the hand palm from current frame to episode end.
-        
+
         Args:
             idx_frame: Current frame index
             epi: Episode data dictionary
             intrinsics: Camera intrinsic matrix
             hand_type: 'left' or 'right' hand
             image_size: (H, W) tuple of image dimensions
-            
+
         Returns:
             Normalized 2D palm trajectory in image space [0, 1]
         """
@@ -555,9 +588,9 @@ if imgs is None:
 
     def get_item_frame(
             self, episode_id, frame_id,
-            action_past_window_size=0, 
+            action_past_window_size=0,
             action_future_window_size=0,
-            image_past_window_size=0, 
+            image_past_window_size=0,
             image_future_window_size=0,
             rel_mode: str = "step",
             load_images: bool = True,
@@ -570,7 +603,7 @@ if imgs is None:
         # 1. Load episode dict  +  extrinsics
         # ------------------------------------------------------------------
         epi, R_w2c, t_w2c = self._load_or_cache_episode(episode_id)
-        T  = len(epi['extrinsics']) # 
+        T  = len(epi['extrinsics']) #
 
         # ------------------------------------------------------------------
         # 2. Build frame-window indices
@@ -596,30 +629,30 @@ if imgs is None:
             action_past_window_size = action_past_window_size,
             action_future_window_size = action_future_window_size,
         )
-        
+
 
         # ------------------------------------------------------------------
         # 4. Vectorised actions  (left + right)
         # ------------------------------------------------------------------
         win_left  = self._prepare_side_window(
-            epi['left'],  R_w2c, t_w2c, idx_win_left, frame_id, anchor_frame=True, 
+            epi['left'],  R_w2c, t_w2c, idx_win_left, frame_id, anchor_frame=True,
             oob=oob_left, start=start_left, end=end_left, upsample_factor=self.upsample_factor
         )
         win_right = self._prepare_side_window(
-            epi['right'], R_w2c, t_w2c, idx_win_right, frame_id, anchor_frame=True, 
+            epi['right'], R_w2c, t_w2c, idx_win_right, frame_id, anchor_frame=True,
             oob=oob_right, start=start_right, end=end_right, upsample_factor=self.upsample_factor
         )
         idx_center = action_past_window_size          # local index of t0 in window
-        
+
         # rel_mode: "step"  or  "anchor" / action_type: "angle" or "keypoints"
         # step: relative to previous frame, anchor: relative to t0
         abs_L, rel_L, msk_L = self._make_action_window_vec(
             win_left,  anchor_idx=idx_center, rel_mode=rel_mode, action_type=self.action_type
-        ) 
+        )
 
         abs_R, rel_R, msk_R = self._make_action_window_vec(
             win_right, anchor_idx=idx_center, rel_mode=rel_mode, action_type=self.action_type
-        ) 
+        )
 
         action_abs = np.concatenate([abs_L, abs_R], axis=1)   # (W,action_dim)
         action_rel = np.concatenate([rel_L, rel_R], axis=1)   # (W,102)
@@ -671,7 +704,7 @@ if imgs is None:
             # first resized from 1408 to 448, and then center-cropped to 256.
 
             new_intrinsics = compute_new_intrinsics_crop(intrinsics, 1408, 256/448*1408, H)
-            
+
         else:
             new_intrinsics = compute_new_intrinsics_resize(intrinsics, (H, W))
 
@@ -684,8 +717,8 @@ if imgs is None:
                 aspect_ratio = np.exp(random.uniform(np.log(1.0), np.log(2.0)))
                 target_size = (int(self.target_image_height * aspect_ratio), self.target_image_height)  # (W, H)
                 augment_params = {
-                    'tgt_aspect': aspect_ratio, 
-                    'flip_augmentation': self.flip_augmentation, 
+                    'tgt_aspect': aspect_ratio,
+                    'flip_augmentation': self.flip_augmentation,
                     'set_none_ratio': self.set_none_ratio,
                 }
 
@@ -693,7 +726,7 @@ if imgs is None:
                 image_list, new_intrinsics, (action_abs, action_rel, action_mask), \
                 (current_state, current_state_mask), instruction = \
                     augmentation_func(
-                        image = image_list, 
+                        image = image_list,
                         intrinsics = new_intrinsics,
                         actions = (action_abs, action_rel, action_mask),
                         states = (current_state, current_state_mask),
@@ -713,7 +746,7 @@ if imgs is None:
                 image_list = center_crop_short_side(image_list[0])[None, ...]
                 new_intrinsics[0][2] = 0.5 * image_list[0].shape[1]  # update the principal point
                 new_intrinsics[1][2] = 0.5 * image_list[0].shape[0]  # update the principal point
-            
+
             if random.random() < self.state_mask_prob:
                 current_state_mask = np.array([False, False])
                 current_state[:] = 0.0
@@ -744,12 +777,12 @@ if imgs is None:
             fov                     = fov,                  # (2,) float32
             intrinsics              = new_intrinsics,       # (3,3) float32
         )
-        
+
         if image_list is not None:
             result_dict['image_list'] = image_list          # (W,H,W,3) uint8
         if image_mask is not None:
             result_dict['image_mask'] = image_mask          # (W,) bool
-            
+
         return result_dict
 
     def set_global_data_statistics(self, global_data_statistics):
@@ -765,7 +798,7 @@ if imgs is None:
         """Pad action and state dimensions to match a unified size."""
         action_np = sample_dict["action_list"]
         state_np = sample_dict["current_state"]
-       
+
         action_dim = action_np.shape[1]
         state_dim = state_np.shape[0]
         if normalization:
@@ -832,14 +865,14 @@ def pad_state_human(
         unified_state_dim (int): target padded state dimension
 
     Returns:
-        Tuple[Tensor, Tensor]: 
+        Tuple[Tensor, Tensor]:
             padded current_state [unified_state_dim],
             padded current_state_mask [unified_state_dim]
     """
 
     current_state = torch.tensor(state, dtype=torch.float32)
     current_state_mask = torch.tensor(state_mask, dtype=torch.bool)
-    
+
     # Expand state mask from per-hand to per-dim
     expanded_state_mask = current_state_mask.repeat_interleave(state_dim // 2)
 
@@ -880,9 +913,9 @@ def pad_action(
             padded actions [T, unified_action_dim] or None,
             padded action mask [T, unified_action_dim]
     """
-    
+
     action_mask = torch.tensor(action_mask, dtype=torch.bool)
-    
+
     # Expand mask from per-hand to per-dimension
     mask_left = action_mask[:, 0].unsqueeze(1).expand(-1, action_dim // 2)
     mask_right = action_mask[:, 1].unsqueeze(1).expand(-1, action_dim // 2)
