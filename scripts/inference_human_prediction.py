@@ -10,6 +10,9 @@ from PIL import Image
 from PIL import ImageOps
 from pathlib import Path
 import multiprocessing as mp
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 from vitra.models import VITRA_Paligemma, load_model
 from vitra.utils.data_utils import resize_short_side_to_target, load_normalizer, recon_traj
 from vitra.utils.config_utils import load_config
@@ -21,9 +24,6 @@ from vitra.datasets.dataset_utils import (
     ActionFeature,
     StateFeature,
 )
-
-repo_root = Path(__file__).parent.parent  # VITRA/
-sys.path.insert(0, str(repo_root))
 
 from visualization.visualize_core import HandVisualizer, normalize_camera_intrinsics, save_to_video, Renderer, process_single_hand_labels
 from visualization.visualize_core import Config as HandConfig
