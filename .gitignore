@@ -166,6 +166,7 @@ cython_debug/
 **/*.pkl
 # **/*.md
 **/*.ipynb
+!vitra_ablation_kaggle.ipynb
 **/*.log
 # **/*.txt
 # **/*.json
