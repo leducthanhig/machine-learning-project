@@ -104,7 +104,10 @@ def update_configs(configs: Dict[str, Any], args: argparse.Namespace) -> Dict[st
     configs["output_root"] = Path(configs["output_root"])
     configs["log_root"] = Path(configs["log_root"])
     configs["cache_root"] = Path(configs["cache_root"]) / configs["model"]
-    configs["model_load_path"] = resolve_weights_path(args.weights)
+    if args.weights != "__dry_run_placeholder__":
+        configs["model_load_path"] = resolve_weights_path(args.weights)
+    else:
+        configs["model_load_path"] = None  # dry_run: no checkpoint needed
 
     if not args.keep_train_augmentation:
         train_dataset = configs["train_dataset"]
@@ -121,6 +124,40 @@ def collect_sampler_ids(batch_sampler, epoch: int, start_step: int, num_steps: i
     for step_idx, batch in zip(range(num_steps), batch_sampler):
         ids.update(tuple(index) for index in batch)
     return ids
+
+
+def count_available_samples(
+    batch_sampler,
+    epoch: int,
+    cutoff_step: int,
+    num_datasets: int,
+    seen_ids: set = None,
+    exclude_seen: bool = True,
+) -> Dict[int, int]:
+    """Count unique unseen samples available per dataset from cutoff_step to end-of-epoch.
+
+    Returns a dict mapping dataset_id -> count of qualifying unique samples.
+    This runs without loading the model and is fast enough to sweep across checkpoints.
+    """
+    batch_sampler.set_epoch(epoch, cutoff_step)
+    seen_ids = seen_ids or set()
+    per_dataset_seen: Dict[int, set] = {i: set() for i in range(num_datasets)}
+    counts: Dict[int, int] = {i: 0 for i in range(num_datasets)}
+
+    for mixed_batch in batch_sampler:
+        for index in mixed_batch:
+            index = tuple(index)
+            dataset_id = index[0]
+            if dataset_id not in counts:
+                continue
+            if exclude_seen and index in seen_ids:
+                continue
+            if index in per_dataset_seen[dataset_id]:
+                continue
+            per_dataset_seen[dataset_id].add(index)
+            counts[dataset_id] += 1
+
+    return counts
 
 
 def get_dataset_names(vla_dataset) -> list:
@@ -389,7 +426,12 @@ def evaluate(configs: Dict[str, Any], args: argparse.Namespace, dataset_name: st
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate VITRA weights.pt loss on a deterministic sampler slice.")
     parser.add_argument("--config", required=True, type=str, help="Training config JSON/YAML used for the run.")
-    parser.add_argument("--weights", required=True, type=str, help="Path to weights.pt or a checkpoint directory containing weights.pt.")
+    parser.add_argument(
+        "--weights",
+        default=None,
+        type=str,
+        help="Path to weights.pt or a checkpoint directory containing weights.pt. Not required for --dry_run.",
+    )
     parser.add_argument("--output_jsonl", default=".tmp/eval_loss.jsonl", type=str, help="Path for per-batch JSONL metrics.")
     parser.add_argument("--eval_dataset", default=None, type=str, help="Evaluate one dataset from the configured mixture, e.g. epic or ssv2.")
     parser.add_argument("--eval_each_dataset", action="store_true", help="Evaluate each dataset in the configured mixture separately.")
@@ -430,7 +472,131 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep train_dataset augmentation/state masking settings. Default disables stochastic eval transforms.",
     )
+    # ── Dry-run / counting mode ────────────────────────────────────────────────
+    parser.add_argument(
+        "--dry_run",
+        action="store_true",
+        help=(
+            "Count unique unseen samples per dataset for each cutoff in --sweep_cutoff_steps "
+            "without loading the model. For each cutoff C, samples from [0, C) are treated as "
+            "seen (inferred automatically); samples from [C, epoch-end) that are unique and "
+            "not in the seen set are counted. Total corpus size is derived from the dataset "
+            "lengths. --seen_sampler_steps is ignored in this mode."
+        ),
+    )
+    parser.add_argument(
+        "--sweep_cutoff_steps",
+        default=None,
+        type=str,
+        help=(
+            "Comma-separated list of sampler cutoff steps to sweep in --dry_run mode "
+            "(overrides --eval_sampler_step for each entry). "
+            "Example: --sweep_cutoff_steps 64000,80000,96000,112000"
+        ),
+    )
     return parser.parse_args()
+
+
+def run_dry_run(configs: Dict[str, Any], args: argparse.Namespace) -> None:
+    """Count unique unseen samples available per dataset from one or more cutoff steps.
+
+    Builds the sampler once (no model load). For each cutoff step C:
+      - seen_ids are collected from sampler steps [0, C) automatically.
+      - count_available_samples walks [C, epoch-end) and counts unique unseen samples.
+      - total_corpus_size is derived from sum(batch_sampler._dataset_lengths).
+
+    Prints a table of (cutoff, total_available, fraction_of_corpus, per_dataset)
+    so you can identify which 16k-step checkpoint boundary leaves ~20% for eval.
+    """
+    import time
+
+    overwatch.info("[dry_run] Building dataset and sampler (no model load) …")
+    t0 = time.monotonic()
+
+    # Build only the sampler; we need a processor to call get_vla_dataset_and_collator.
+    # Construct the model CPU-only just to extract the processor, then discard it.
+    from vitra.models.vla_builder import build_vla  # noqa: F811
+
+    tmp_model = build_vla(configs=copy.deepcopy(configs))
+    processor = tmp_model.processor
+    del tmp_model
+
+    vla_dataset, _collator, batch_sampler = make_dataset_and_sampler(configs, processor, args)
+    dataset_names = get_dataset_names(vla_dataset)
+    num_datasets = len(dataset_names)
+
+    # Total unique corpus size is the sum of per-dataset lengths from the sampler.
+    total_corpus = sum(batch_sampler._dataset_lengths)
+    overwatch.info(
+        f"[dry_run] Sampler ready in {time.monotonic() - t0:.1f}s — "
+        f"{num_datasets} datasets: {dataset_names}, "
+        f"total_corpus={total_corpus:,}"
+    )
+
+    # Determine which cutoff steps to sweep.
+    if args.sweep_cutoff_steps is not None:
+        cutoff_steps = [int(s.strip()) for s in args.sweep_cutoff_steps.split(",")]
+    else:
+        cutoff_steps = [args.eval_sampler_step]
+
+    results = []
+    for cutoff in cutoff_steps:
+        # Seen samples = everything the model was trained on up to this checkpoint.
+        # Inferred directly from the cutoff step; --seen_sampler_steps is ignored here.
+        t1 = time.monotonic()
+        overwatch.info(f"[dry_run] cutoff={cutoff}: collecting seen_ids from [0, {cutoff}) …")
+        seen_ids = collect_sampler_ids(batch_sampler, args.seen_epoch, 0, cutoff)
+        overwatch.info(
+            f"[dry_run] cutoff={cutoff}: {len(seen_ids):,} seen sample-ids "
+            f"in {time.monotonic() - t1:.1f}s"
+        )
+
+        t2 = time.monotonic()
+        counts = count_available_samples(
+            batch_sampler,
+            epoch=args.eval_epoch,
+            cutoff_step=cutoff,
+            num_datasets=num_datasets,
+            seen_ids=seen_ids if args.exclude_seen_ids else set(),
+            exclude_seen=args.exclude_seen_ids,
+        )
+        elapsed = time.monotonic() - t2
+        total_available = sum(counts.values())
+        fraction = round(total_available / total_corpus, 4) if total_corpus > 0 else None
+        entry = {
+            "cutoff_step": cutoff,
+            "seen_ids_count": len(seen_ids),
+            "total_available": total_available,
+            "fraction_of_corpus": fraction,
+            "elapsed_s": round(elapsed, 2),
+            "per_dataset": {dataset_names[i]: counts[i] for i in range(num_datasets)},
+        }
+        results.append(entry)
+        overwatch.info(
+            f"[dry_run] cutoff={cutoff}: available={total_available:,} "
+            f"({fraction:.1%} of corpus) in {elapsed:.1f}s"
+        )
+        for name, cnt in entry["per_dataset"].items():
+            overwatch.info(f"  {name}: {cnt:,}")
+
+    # Write JSON summary.
+    output_path = Path(args.output_jsonl).with_suffix(".dry_run.json")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    dry_run_summary = {
+        "mode": "dry_run",
+        "exclude_seen_ids": args.exclude_seen_ids,
+        "dataset_names": dataset_names,
+        "total_corpus": total_corpus,
+        "sampler_num_iters": batch_sampler.num_iters,
+        "sampler_dataset_lengths": batch_sampler._dataset_lengths,
+        "sampler_weights": batch_sampler.weights,
+        "cutoff_sweep": results,
+    }
+    with open(output_path, "w") as f:
+        json.dump(dry_run_summary, f, indent=2)
+    overwatch.info(f"[dry_run] Summary written to {output_path}")
+    if overwatch.is_rank_zero():
+        print(json.dumps(dry_run_summary, indent=2))
 
 
 if __name__ == "__main__":
@@ -444,6 +610,15 @@ if __name__ == "__main__":
         dist.init_process_group(backend=backend)
 
     args = parse_args()
+
+    # In dry_run mode --weights is not required.
+    if not args.dry_run and args.weights is None:
+        raise ValueError("--weights is required unless --dry_run is set.")
+
+    # Patch resolve_weights_path to be a no-op when weights not provided.
+    if args.weights is None:
+        args.weights = "__dry_run_placeholder__"
+
     configs = update_configs(load_config(args.config), args)
 
     if args.seen_optimizer_steps is not None and args.seen_sampler_steps is None:
@@ -455,7 +630,9 @@ if __name__ == "__main__":
     if args.eval_each_dataset and args.eval_dataset is not None:
         raise ValueError("Use either --eval_each_dataset or --eval_dataset, not both.")
 
-    if args.eval_each_dataset:
+    if args.dry_run:
+        run_dry_run(configs, args)
+    elif args.eval_each_dataset:
         dataset_names = get_config_dataset_names(configs)
         summaries = [evaluate(configs, args, dataset_name=name) for name in dataset_names]
         summary = {
@@ -466,18 +643,17 @@ if __name__ == "__main__":
             ],
             "metrics": {item["dataset"]: item["metrics"] for item in summaries},
         }
+        if overwatch.is_rank_zero():
+            print(json.dumps({"summary_paths": summary["summary_paths"], "metrics": summary["metrics"]}, indent=2))
     else:
         summary = evaluate(configs, args, dataset_name=args.eval_dataset)
-
-    if overwatch.is_rank_zero():
-        if args.eval_dataset is not None:
-            output_jsonl = Path(args.output_jsonl)
-            summary_path = output_jsonl.with_name(f"{output_jsonl.stem}.{args.eval_dataset}{output_jsonl.suffix}").with_suffix(".summary.json")
-        elif args.eval_each_dataset:
-            summary_path = summary["summary_paths"]
-        else:
-            summary_path = str(Path(args.output_jsonl).with_suffix(".summary.json"))
-        print(json.dumps({"summary_path": summary_path, "metrics": summary["metrics"]}, indent=2))
+        if overwatch.is_rank_zero():
+            if args.eval_dataset is not None:
+                output_jsonl = Path(args.output_jsonl)
+                summary_path = str(output_jsonl.with_name(f"{output_jsonl.stem}.{args.eval_dataset}{output_jsonl.suffix}").with_suffix(".summary.json"))
+            else:
+                summary_path = str(Path(args.output_jsonl).with_suffix(".summary.json"))
+            print(json.dumps({"summary_path": summary_path, "metrics": summary["metrics"]}, indent=2))
 
     if dist.is_initialized():
         dist.barrier()
