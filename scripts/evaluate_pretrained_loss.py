@@ -85,6 +85,33 @@ def resolve_weights_path(path: str) -> str:
     return str(weights_path)
 
 
+def cyclic_shift_batch(value: torch.Tensor) -> torch.Tensor:
+    if value.shape[0] <= 1:
+        return value
+    return torch.roll(value, shifts=1, dims=0)
+
+
+def apply_inference_ablation(batch: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Apply input-only ablations for forward-loss evaluation."""
+    state_mode = args.ablate_state
+    if state_mode == "zero_state":
+        batch["current_state"] = torch.zeros_like(batch["current_state"])
+    elif state_mode == "no_state":
+        batch["current_state"] = torch.zeros_like(batch["current_state"])
+        batch["current_state_mask"] = torch.zeros_like(batch["current_state_mask"], dtype=torch.bool)
+    elif state_mode == "shuffle_state":
+        batch["current_state"] = cyclic_shift_batch(batch["current_state"])
+        batch["current_state_mask"] = cyclic_shift_batch(batch["current_state_mask"])
+
+    fov_mode = args.ablate_fov
+    if fov_mode == "zero_fov":
+        batch["fov"] = torch.zeros_like(batch["fov"])
+    elif fov_mode == "shuffle_fov":
+        batch["fov"] = cyclic_shift_batch(batch["fov"])
+
+    return batch
+
+
 def update_configs(configs: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
     configs = copy.deepcopy(configs)
 
@@ -98,6 +125,8 @@ def update_configs(configs: Dict[str, Any], args: argparse.Namespace) -> Dict[st
         configs["total_batch_size"] = args.total_batch_size
     if args.fwd_pred_next_n is not None:
         configs["fwd_pred_next_n"] = args.fwd_pred_next_n
+    if args.repeated_diffusion_steps is not None:
+        configs["repeated_diffusion_steps"] = args.repeated_diffusion_steps
     if args.use_bf16:
         configs["use_bf16"] = True
 
@@ -350,6 +379,7 @@ def evaluate(configs: Dict[str, Any], args: argparse.Namespace, dataset_name: st
     with open(output_jsonl, "w") as f:
         for local_step, batch in progress:
             batch = move_to_device(batch, device)
+            batch = apply_inference_ablation(batch, args)
             prediction = model.forward(
                 batch["pixel_values"],
                 batch["input_ids"],
@@ -369,6 +399,9 @@ def evaluate(configs: Dict[str, Any], args: argparse.Namespace, dataset_name: st
                 "source_start_sampler_step": args.eval_sampler_step,
                 "batch_size": int(batch["input_ids"].shape[0]),
                 "dataset": dataset_name or "mixed",
+                "ablate_state": args.ablate_state,
+                "ablate_fov": args.ablate_fov,
+                "repeated_diffusion_steps": configs.get("repeated_diffusion_steps"),
             }
             for key, value in prediction.items():
                 record[key] = tensor_to_float(value)
@@ -398,6 +431,11 @@ def evaluate(configs: Dict[str, Any], args: argparse.Namespace, dataset_name: st
         "sampler_num_iters": batch_sampler.num_iters,
         "sampler_dataset_lengths": batch_sampler._dataset_lengths,
         "sampler_weights": batch_sampler.weights,
+        "ablation": {
+            "ablate_state": args.ablate_state,
+            "ablate_fov": args.ablate_fov,
+            "repeated_diffusion_steps": configs.get("repeated_diffusion_steps"),
+        },
         "metrics": {},
     }
     for key, values in component_values.items():
@@ -464,9 +502,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", default=None, type=int, help="Override per-device batch size.")
     parser.add_argument("--total_batch_size", default=None, type=int, help="Override global batch size for metadata consistency.")
     parser.add_argument("--fwd_pred_next_n", default=None, type=int, help="Override future action horizon.")
+    parser.add_argument("--repeated_diffusion_steps", default=None, type=int, help="Override repeated diffusion steps for forward-loss evaluation.")
     parser.add_argument("--num_workers", default=None, type=int, help="Override DataLoader workers.")
     parser.add_argument("--prefetch_factor", default=None, type=int, help="Override DataLoader prefetch factor.")
     parser.add_argument("--use_bf16", action="store_true", help="Force model use_bf16=True.")
+    parser.add_argument(
+        "--ablate_state",
+        default="none",
+        choices=["none", "zero_state", "no_state", "shuffle_state"],
+        help=(
+            "Inference-only state ablation. zero_state zeros state values but keeps masks; "
+            "no_state zeros values and masks; shuffle_state cyclically shifts states within each batch."
+        ),
+    )
+    parser.add_argument(
+        "--ablate_fov",
+        default="none",
+        choices=["none", "zero_fov", "shuffle_fov"],
+        help="Inference-only FOV ablation. shuffle_fov cyclically shifts FOV values within each batch.",
+    )
     parser.add_argument(
         "--keep_train_augmentation",
         action="store_true",
