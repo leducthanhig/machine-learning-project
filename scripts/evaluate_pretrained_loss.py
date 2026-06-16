@@ -91,6 +91,13 @@ def cyclic_shift_batch(value: torch.Tensor) -> torch.Tensor:
     return torch.roll(value, shifts=1, dims=0)
 
 
+def get_local_rank() -> int:
+    local_rank = getattr(overwatch, "local_rank", None)
+    if callable(local_rank):
+        return int(local_rank())
+    return int(os.environ.get("LOCAL_RANK", 0))
+
+
 def apply_inference_ablation(batch: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
     """Apply input-only ablations for forward-loss evaluation."""
     state_mode = args.ablate_state
@@ -300,7 +307,7 @@ def make_dataloader(vla_dataset, collator, batch_sampler, args: argparse.Namespa
 
 @torch.no_grad()
 def evaluate(configs: Dict[str, Any], args: argparse.Namespace, dataset_name: str = None) -> Dict[str, Any]:
-    device = torch.device(f"cuda:{overwatch.local_rank()}" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{get_local_rank()}" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
         torch.cuda.empty_cache()
