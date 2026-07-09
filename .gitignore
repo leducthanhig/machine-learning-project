@@ -165,8 +165,7 @@ cython_debug/
 # **/*.png
 **/*.pkl
 # **/*.md
-**/*.ipynb
-!vitra_ablation_kaggle.ipynb
+# **/*.ipynb
 **/*.log
 # **/*.txt
 # **/*.json
@@ -195,4 +194,3 @@ benchmark*/
 .DS_Store
 
 paper
-
