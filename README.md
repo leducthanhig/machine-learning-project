@@ -16,7 +16,20 @@ This project focuses on the **Human Pretraining** phase of VITRA, scaling pretra
 
 ---
 
-## 2. Implementation (Config & Pretraining)
+## 2. Repository Structure
+
+```text
+notebooks/      Kaggle workflows for pretraining, inference, and dataset preparation
+scripts/        Training and evaluation entrypoints
+vitra/          Model, dataset, and configuration code
+ablation/       Inference-only ablation notebook and supporting notes
+data/           Dataset documentation and expected data layout
+visualization/  Visualization utilities inherited from the VITRA codebase
+```
+
+---
+
+## 3. Implementation (Config & Pretraining)
 
 ### Environment & Resources
 - **Runtime Environment**: Kaggle Notebook (Google G4 instance).
@@ -50,7 +63,7 @@ For step-by-step guidance on setting up environments and executing pretraining, 
 
 ---
 
-## 3. Evaluation (2 Protocols)
+## 4. Evaluation (2 Protocols)
 
 To evaluate model convergence and generalization, we established two evaluation protocols. The notebook implementation of the training and evaluation runs is contained in `notebooks/pretrain.ipynb`.
 - **Training & Evaluation Notebook**: [notebooks/pretrain.ipynb](notebooks/pretrain.ipynb)
@@ -92,7 +105,7 @@ A lightweight benchmark used to quickly monitor convergence behavior on both dat
 
 ---
 
-## 4. Visual Inference & Trajectory Generation
+## 5. Visual Inference & Trajectory Generation
 
 To verify that the model generates smooth, physically plausible hand trajectories (beyond calculating single-step loss metrics), we run full multi-step reverse diffusion sampling (e.g., 10 DDIM steps) on test images.
 
@@ -101,15 +114,14 @@ To verify that the model generates smooth, physically plausible hand trajectorie
 
 ---
 
-## 5. Ablation Study
+## 6. Ablation Study
 
-We performed an inference-only ablation study on our fully-trained checkpoint (`step=16000`) to evaluate the relative contributions of key model input components (e.g., current hand states, camera field of view (FOV), and repeated diffusion steps) without the need to retrain the model.
+We performed an inference-only ablation study on the selected 16k-step checkpoint (`step=16000`) to evaluate the relative contributions of key model input components without the need to retrain the model.
 
-Key configurations analyzed include:
+Reported configurations include:
 - `baseline`: Standard evaluation without modifications.
 - `no_state`: Setting `current_state` to 0 and masking it out to verify if hand states aid trajectory predictions.
 - `zero_fov`: Zeroing out camera FOV details to test spatial/camera alignment contribution.
-- `rds1` / `rds4`: Overriding `repeated_diffusion_steps` to 1 or 4 to test hyperparameter inference trade-offs.
 
 For full ablation scripts, configuration setup, and output formats, refer directly to the ablation directory:
 - **Ablation Documentation**: [ablation/README.md](ablation/README.md)
@@ -117,7 +129,7 @@ For full ablation scripts, configuration setup, and output formats, refer direct
 
 ---
 
-## 6. Supplementary
+## 7. Supplementary
 
 ### Kaggle Dataset Preparation (EPIC-Kitchens)
 To facilitate seamless training on Kaggle notebooks and avoid disk overflow or long setup delays, we created a utility pipeline to partition and transfer EPIC-Kitchens video data directly from the Hugging Face Hub (`a1raman/epic_kitchens_100`) to Kaggle datasets.

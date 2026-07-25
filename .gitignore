@@ -194,3 +194,10 @@ benchmark*/
 .DS_Store
 
 paper
+
+# Ablation
+ablation/ablation_results/
+ablation/figures/
+ablation/*.py
+ablation/*.md
+ablation/*.txt
