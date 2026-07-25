@@ -27,7 +27,7 @@ This project focuses on the **Human Pretraining** phase of VITRA, scaling pretra
 - **SSV2**: 5x oversampled Something-Something-V2 dataset (5x 1,125,013 frames).
 - **EPIC**: 1x EPIC-Kitchens dataset (1x 4,836,063 frames).
 - **Total Dataset Size**: 10,461,128 frames.
-- **Iterations / Steps**: 
+- **Iterations / Steps**:
   - Local batch size: `64`
   - Gradient Accumulation: `8 steps` (effective batch size: `512`)
   - Total iterations: `163,455` (1 epoch over the mixture dataset).
@@ -45,16 +45,15 @@ Due to Kaggle's 12-hour session runtime limit, the training was split into **10 
   python scripts/train.py --config vitra/configs/human_pretrain.json
   ```
 
-For step-by-step guidance on setting up environments and executing pretraining, refer to the pretraining notebook:  
+For step-by-step guidance on setting up environments and executing pretraining, refer to the pretraining notebook:
 - **Pretraining Notebook**: [notebooks/pretrain.ipynb](notebooks/pretrain.ipynb)
 
 ---
 
 ## 3. Evaluation (2 Protocols)
 
-To evaluate model convergence and generalization, we established two evaluation protocols. The notebook implementation of the training and evaluation runs is contained in `notebooks/pretrain.ipynb`, while visual prediction inference is located in `notebooks/inference.ipynb`.
+To evaluate model convergence and generalization, we established two evaluation protocols. The notebook implementation of the training and evaluation runs is contained in `notebooks/pretrain.ipynb`.
 - **Training & Evaluation Notebook**: [notebooks/pretrain.ipynb](notebooks/pretrain.ipynb)
-- **Visual Inference Notebook**: [notebooks/inference.ipynb](notebooks/inference.ipynb)
 
 ### Protocol 1: Test-split Evaluation (Main Benchmark)
 Used to measure the model's zero-shot generalization capabilities on unseen data.
@@ -93,7 +92,16 @@ A lightweight benchmark used to quickly monitor convergence behavior on both dat
 
 ---
 
-## 4. Ablation Study
+## 4. Visual Inference & Trajectory Generation
+
+To verify that the model generates smooth, physically plausible hand trajectories (beyond calculating single-step loss metrics), we run full multi-step reverse diffusion sampling (e.g., 10 DDIM steps) on test images.
+
+- **Visual Inference Notebook**: [notebooks/inference.ipynb](notebooks/inference.ipynb)
+- **Visual Inference Results**: Refer to [examples/README.md](examples/README.md) for the test images, input instructions, and output videos comparing predicted trajectories across training checkpoints (10k, 16k) and the Author's 85k checkpoint.
+
+---
+
+## 5. Ablation Study
 
 We performed an inference-only ablation study on our fully-trained checkpoint (`step=16000`) to evaluate the relative contributions of key model input components (e.g., current hand states, camera field of view (FOV), and repeated diffusion steps) without the need to retrain the model.
 
@@ -109,7 +117,7 @@ For full ablation scripts, configuration setup, and output formats, refer direct
 
 ---
 
-## 5. Supplementary
+## 6. Supplementary
 
 ### Kaggle Dataset Preparation (EPIC-Kitchens)
 To facilitate seamless training on Kaggle notebooks and avoid disk overflow or long setup delays, we created a utility pipeline to partition and transfer EPIC-Kitchens video data directly from the Hugging Face Hub (`a1raman/epic_kitchens_100`) to Kaggle datasets.
