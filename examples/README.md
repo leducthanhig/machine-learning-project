@@ -13,15 +13,18 @@ All visual inference runs can be generated using [this notebook](../notebooks/in
 * **Scenario**: First-person kitchen setting. The left hand holds a piece of crumpled paper above a trash bin lined with a plastic bag.
 * **Input Image**: ![example 1](./0001.jpg)
 * **Target Instruction**: `"Left: Put the trash into the garbage. Right: None."`
+* **Output Videos**:
+    * 10k checkpoint:
 
-<details>
-    <summary>Show output videos</summary>
-    <ul>
-        <li><strong>10k checkpoint</strong>: <video controls src="./predictions/0001_cp10k.mp4" alt="example 1 output"></video></li>
-        <li><strong>16k checkpoint</strong>: <video controls src="./predictions/0001_cp16k.mp4" alt="example 1 output"></video></li>
-        <li><strong>Author's 85k checkpoint</strong>: <video controls src="./predictions/0001_hf85k.mp4" alt="example 1 output"></video></li>
-    </ul>
-</details>
+        https://github.com/user-attachments/assets/a1b27425-ed4c-40d3-9424-13062ec0c2f8
+    
+    * 16k checkpoint:
+
+        https://github.com/user-attachments/assets/023f3ced-cc60-432b-8045-4b6b72134e61
+
+    * Author's 85k checkpoint:
+
+        https://github.com/user-attachments/assets/4e1c2765-92c3-41e0-8b9f-ce04cff40cea
 
 ---
 
@@ -30,15 +33,18 @@ All visual inference runs can be generated using [this notebook](../notebooks/in
 * **Scenario**: Cluttered desk top-down view. The right hand approaches the table surface to pick up a specific card/picture.
 * **Input Image**: ![example 2](./0002.jpg)
 * **Target Instruction**: `"Left hand: None. Right hand: Pick up the picture of Michael Jackson."`
+* **Output Videos**:
+    * 10k checkpoint: 
 
-<details>
-    <summary>Show output videos</summary>
-    <ul>
-        <li><strong>10k checkpoint</strong>: <video controls src="./predictions/0002_cp10k.mp4" alt="example 2 output"></video></li>
-        <li><strong>16k checkpoint</strong>: <video controls src="./predictions/0002_cp16k.mp4" alt="example 2 output"></video></li>
-        <li><strong>Author's 85k checkpoint</strong>: <video controls src="./predictions/0002_hf85k.mp4" alt="example 2 output"></video></li>
-    </ul>
-</details>
+        https://github.com/user-attachments/assets/5b8e044c-c113-430e-92a4-7e9d3cd3c3ad
+    
+    * 16k checkpoint:
+
+        https://github.com/user-attachments/assets/932130c8-04f3-4494-8103-761ba6a94136
+
+    * Author's 85k checkpoint:
+
+        https://github.com/user-attachments/assets/f3523f66-1df1-4ba1-8432-ec7eeaf6ef00
 
 ---
 
